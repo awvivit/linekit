@@ -8,6 +8,10 @@ Linekit turns line art (PNG, JPG, or WebP) into clean SVG, entirely in the brows
 
 The display name, package name, and Pages base path (`/linekit/`) live in [`src/brand.ts`](src/brand.ts). The npm package name is `linekit`.
 
+## Security
+
+GitHub Pages cannot set HTTP response headers, so the Content Security Policy is a meta tag in the built page. `frame-ancestors` does not apply in a meta tag, and other sites can frame the page. Self-hosted copies can block embedding by sending a `frame-ancestors` HTTP header.
+
 ## Requirements
 
 - Node.js 22
