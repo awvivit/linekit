@@ -8,8 +8,9 @@ describe('App', () => {
     render(<App />)
 
     expect(screen.getByRole('heading', { level: 1, name: site.name })).toBeInTheDocument()
-    expect(screen.getByText(/images never leave your browser/i)).toBeInTheDocument()
-    expect(screen.getByText(/not a verified claim/i)).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Privacy' })).toHaveTextContent(
+      "Privacy. Linekit is being built to process images only in your browser. This early version doesn't trace images yet.",
+    )
     expect(document.title).toBe(site.name)
   })
 })

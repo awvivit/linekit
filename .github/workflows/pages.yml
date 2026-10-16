@@ -1,5 +1,7 @@
 name: Deploy GitHub Pages
 
+# Pull requests do not run this workflow, so merging does not require the
+# Pages source to already be GitHub Actions. It runs after the commit is on main.
 on:
   push:
     branches:

@@ -29,7 +29,11 @@ test('loads under /linekit/ with no console errors or foreign requests', async (
   expect(response?.ok()).toBe(true)
 
   await expect(page.getByRole('heading', { level: 1, name: 'Linekit' })).toBeVisible()
-  await expect(page.getByText(/images never leave your browser/i)).toBeVisible()
+  await expect(
+    page.getByText(
+      "Linekit is being built to process images only in your browser. This early version doesn't trace images yet.",
+    ),
+  ).toBeVisible()
 
   const policy = await page
     .locator('meta[http-equiv="Content-Security-Policy"]')

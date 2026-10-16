@@ -28,12 +28,10 @@ export default function App() {
           <dd>Your browser</dd>
         </div>
       </dl>
-      <section className="card" aria-labelledby="privacy-heading">
-        <h2 id="privacy-heading">Privacy</h2>
+      <section className="card" aria-label="Privacy">
         <p>
-          {site.name} is intended to process images on your device: images never leave your
-          browser. That is the product intent, and it is not a verified claim. This preview is a
-          scaffold.
+          <strong>Privacy.</strong> Linekit is being built to process images only in your browser.
+          This early version doesn't trace images yet.
         </p>
       </section>
       <footer>

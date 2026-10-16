@@ -4,7 +4,7 @@
 
 Linekit turns line art (PNG, JPG, or WebP) into clean SVG, entirely in the browser. The site is a static Vite app and is published with GitHub Pages at [awvivit.github.io/linekit](https://awvivit.github.io/linekit/).
 
-**Privacy.** Linekit is intended to process images only on your device: images never leave your browser. That sentence is the product intent. It is not a verified claim about the current build. This repository does not trace images yet.
+**Privacy.** Linekit is being built to process images only in your browser. This early version doesn't trace images yet.
 
 The display name, package name, and Pages base path (`/linekit/`) live in [`src/brand.ts`](src/brand.ts). The npm package name is `linekit`.
 
