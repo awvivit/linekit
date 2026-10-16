@@ -41,7 +41,7 @@ body {
 }
 
 .shell {
-  width: min(40rem, 100%);
+  width: min(68rem, 100%);
   margin: 0 auto;
   padding: clamp(2.75rem, 9vw, 6rem) clamp(1.25rem, 4vw, 1.5rem) 3rem;
 }
@@ -106,6 +106,228 @@ h1 {
   font-size: 1.05rem;
 }
 
+.dropzone {
+  margin-top: 2rem;
+  background: var(--card);
+  border: 1px dashed var(--ink);
+  border-radius: 14px;
+}
+
+.dropzone.dragging {
+  background: var(--bg);
+}
+
+.picker {
+  position: relative;
+  display: grid;
+  gap: 0.35rem;
+  place-items: center;
+  min-height: 8.5rem;
+  padding: 1.4rem 1rem;
+  text-align: center;
+  cursor: pointer;
+}
+
+.picker input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.alert {
+  margin: 1rem 0 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--ink);
+  border-radius: 12px;
+}
+
+.workspace {
+  margin-top: 1.5rem;
+}
+
+.sliders {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: minmax(8.5rem, 11rem) minmax(0, 1fr) 2.25rem;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.slider label {
+  font-size: 0.98rem;
+}
+
+.slider input[type='range'] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--ink);
+}
+
+.slider span,
+.status {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.crop-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
+}
+
+.text-button,
+.actions button,
+.actions a,
+.action-pending {
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.text-button {
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 0.8rem;
+}
+
+figure {
+  margin: 0;
+  min-width: 0;
+}
+
+figcaption {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.frame {
+  position: relative;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+
+.frame img,
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.preview-frame {
+  display: grid;
+  place-items: center;
+  min-height: 8rem;
+}
+
+.crop-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.crop-hit {
+  fill: transparent;
+}
+
+.crop-shade {
+  fill: rgba(28, 25, 21, 0.42);
+  pointer-events: none;
+}
+
+.crop-box-outer,
+.crop-box-inner,
+.crop-handle {
+  pointer-events: none;
+}
+
+.crop-box-outer {
+  fill: none;
+  stroke: #1c1915;
+  stroke-width: 0.008;
+}
+
+.crop-box-inner {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 0.003;
+}
+
+.crop-handle {
+  fill: #fff;
+  stroke: #1c1915;
+  stroke-width: 0.004;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.actions a,
+.actions button,
+.action-pending {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  text-decoration: none;
+}
+
+.actions a,
+.actions button {
+  color: var(--bg);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  cursor: pointer;
+}
+
+.actions button:disabled,
+.action-pending {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--rule);
+  cursor: default;
+}
+
+.status {
+  min-height: 1.4rem;
+  margin: 0.7rem 0 0;
+}
+
 .card {
   margin-top: 2rem;
   padding: 1.2rem 1.3rem 1.3rem;
@@ -129,8 +351,27 @@ footer {
   font-size: 0.85rem;
 }
 
-@media (max-width: 36rem) {
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+@media (max-width: 52rem) {
+  .compare {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 40rem) {
   .facts {
     grid-template-columns: 1fr;
+  }
+
+  .slider {
+    grid-template-columns: minmax(0, 1fr) 2.25rem;
+  }
+
+  .slider label {
+    grid-column: 1 / -1;
   }
 }

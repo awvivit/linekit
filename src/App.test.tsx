@@ -9,8 +9,9 @@ describe('App', () => {
 
     expect(screen.getByRole('heading', { level: 1, name: site.name })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Privacy' })).toHaveTextContent(
-      "Privacy. Linekit is being built to process images only in your browser. This early version doesn't trace images yet.",
+      'Privacy. Linekit traces images only in your browser.',
     )
+    expect(screen.getByLabelText(/choose a photo or drop it here/i)).toBeInTheDocument()
     expect(document.title).toBe(site.name)
   })
 })

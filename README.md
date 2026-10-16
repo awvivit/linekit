@@ -2,15 +2,17 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Linekit turns line art (PNG, JPG, or WebP) into clean SVG, entirely in the browser. The site is a static Vite app and is published with GitHub Pages at [awvivit.github.io/linekit](https://awvivit.github.io/linekit/).
+Linekit turns a photo of line art (PNG, JPEG, WebP, or HEIC) into clean SVG, entirely in the browser. The site is a static Vite app and is published with GitHub Pages at [awvivit.github.io/linekit](https://awvivit.github.io/linekit/).
 
-**Privacy.** Linekit is being built to process images only in your browser. This early version doesn't trace images yet.
+**Privacy.** Linekit traces images only in your browser.
 
 The display name, package name, and Pages base path (`/linekit/`) live in [`src/brand.ts`](src/brand.ts). The npm package name is `linekit`.
 
 ## Security
 
 GitHub Pages cannot set HTTP response headers, so the Content Security Policy is a meta tag in the built page. `frame-ancestors` does not apply in a meta tag, and other sites can frame the page. Self-hosted copies can block embedding by sending a `frame-ancestors` HTTP header.
+
+The photo and the traced SVG are shown from `blob:` URLs created in the page, so the policy allows `img-src 'self' blob:`. Scripts, workers, and connections stay on this origin. There is no `unsafe-inline` and no `unsafe-eval`.
 
 ## Requirements
 
@@ -49,7 +51,7 @@ Then open [http://127.0.0.1:4173/linekit/](http://127.0.0.1:4173/linekit/).
 
 Linekit is [MIT](LICENSE), copyright 2026 Apolinario Vivit.
 
-Dependencies must carry an identified license. The license check fails on GPL, AGPL, LGPL, SSPL, and unknown licenses. An SPDX `OR` expression is accepted when at least one side is an allowed, identified license. Potrace and any other GPL-family tracing library are out of bounds. Later tracing is planned around [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs) (public domain) and [SVGO](https://github.com/svg/svgo).
+Dependencies must carry an identified license. The license check fails on GPL, AGPL, LGPL, SSPL, and unknown licenses. An SPDX `OR` expression is accepted when at least one side is an allowed, identified license. Potrace and any other GPL-family tracing library are out of bounds. Tracing uses [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs) (public domain) and [SVGO](https://github.com/svg/svgo).
 
 ## Contributing
 
