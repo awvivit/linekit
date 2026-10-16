@@ -133,9 +133,9 @@ export default function App() {
     if (!svg) return
     try {
       await navigator.clipboard.writeText(svg)
-      setNotice('Copied')
+      setNotice('Copied.')
     } catch {
-      setNotice('Copy failed. Download the SVG instead.')
+      setNotice("Couldn't copy. Download the SVG instead.")
     }
   }
 

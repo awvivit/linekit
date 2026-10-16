@@ -35,6 +35,7 @@ const ALLOWED_ATTRIBUTES = new Set([
 ])
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const UNSAFE_SVG_MESSAGE = "Couldn't make a safe SVG from this photo."
 
 /**
  * Rebuild an SVG from an allowlist. Scripts, event handlers, foreignObject,
@@ -59,7 +60,7 @@ class SvgParser {
     this.skipIgnorable()
     const root = this.readElement()
     if (!root || root.tag !== 'svg') {
-      throw new Error('The trace could not be turned into a safe SVG.')
+      throw new Error(UNSAFE_SVG_MESSAGE)
     }
     return root.markup
   }
@@ -76,7 +77,7 @@ class SvgParser {
     }
     const tag = this.readTag()
     if (!tag) {
-      throw new Error('The trace could not be turned into a safe SVG.')
+      throw new Error(UNSAFE_SVG_MESSAGE)
     }
     if (!ALLOWED_TAGS.has(tag.name)) {
       if (!tag.selfClosing) this.skipSubtree(tag.name)
@@ -92,7 +93,7 @@ class SvgParser {
       if (this.source.startsWith('</', this.index)) {
         const close = this.readClose()
         if (close !== tag.name) {
-          throw new Error('The trace could not be turned into a safe SVG.')
+          throw new Error(UNSAFE_SVG_MESSAGE)
         }
         break
       }
@@ -253,7 +254,7 @@ function assertSafe(svg: string): void {
   const forbidden =
     /<script|<foreignobject|<image|<metadata|<title|<desc|<!--|<!doctype|<iframe|\son[a-z]+\s*=|javascript:|data:|base64|xlink:href|foreignobject/i
   if (forbidden.test(svg) || !svg.startsWith('<svg')) {
-    throw new Error('The trace could not be turned into a safe SVG.')
+    throw new Error(UNSAFE_SVG_MESSAGE)
   }
 }
 

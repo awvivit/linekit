@@ -5,11 +5,20 @@ export const MAX_EDGE = 4000
 export const MAX_BYTES = 32 * 1024 * 1024
 
 /**
- * Header dimensions above either limit are treated as a decompression bomb.
- * 4032×3024 (about 12.2 megapixels) stays under both.
+ * Header limits. A side longer than MAX_DIMENSION is always rejected.
+ * MAX_PIXELS applies when createImageBitmap resizes during decode.
+ * MAX_PIXELS_UNSCALED applies when the full bitmap may be allocated:
+ * resize is missing, resize is ignored, or the browser is WebKit.
+ * 4032×3024 (about 12.2 megapixels) stays under both pixel caps.
  */
 export const MAX_DIMENSION = 16_384
 export const MAX_PIXELS = 40_000_000
+export const MAX_PIXELS_UNSCALED = 24_000_000
+
+export type DecodeSizing = {
+  webkit: boolean
+  resizeWorks: boolean
+}
 
 export const HEIC_MESSAGE =
   "This browser can't open HEIC photos. Save as JPEG and try again."
@@ -22,7 +31,7 @@ export const UNSUPPORTED_MESSAGE = 'Use a PNG, JPEG, WebP, or HEIC photo.'
 
 export const EMPTY_MESSAGE = 'This file is empty.'
 
-export const DECODE_MESSAGE = 'This photo could not be opened.'
+export const DECODE_MESSAGE = "Couldn't open this photo. Try a JPEG or PNG."
 
 export type ImageKind = 'png' | 'jpeg' | 'webp' | 'heic'
 
@@ -95,12 +104,33 @@ export function exceedsByteCap(byteLength: number): boolean {
   return byteLength > MAX_BYTES
 }
 
-export function isDecompressionBomb(width: number, height: number): boolean {
+export function orientedDimensions(
+  width: number,
+  height: number,
+  orientation: number,
+): { width: number; height: number } {
+  if (orientation >= 5 && orientation <= 8) {
+    return { width: height, height: width }
+  }
+  return { width, height }
+}
+
+/** WebKit always uses the 24 MP cap. Resize options are not trusted there. */
+export function pixelCap(sizing: DecodeSizing): number {
+  if (sizing.webkit || !sizing.resizeWorks) return MAX_PIXELS_UNSCALED
+  return MAX_PIXELS
+}
+
+export function isDecompressionBomb(
+  width: number,
+  height: number,
+  maxPixels = MAX_PIXELS,
+): boolean {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
     return true
   }
   if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
     return true
   }
-  return width * height > MAX_PIXELS
+  return width * height > maxPixels
 }

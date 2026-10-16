@@ -1,4 +1,4 @@
-import { ImageProcessError } from './limits.ts'
+import { DECODE_MESSAGE, ImageProcessError } from './limits.ts'
 import type { WorkerRequest, WorkerResponse } from './messages.ts'
 import { preparePhoto, tracePrepared, type PreparedPhoto } from './process.ts'
 
@@ -29,7 +29,7 @@ async function handle(message: WorkerRequest): Promise<void> {
     const svg = tracePrepared(photo, message.controls)
     scope.postMessage({ kind: 'traced', id: message.id, svg })
   } catch (error) {
-    const text = error instanceof ImageProcessError ? error.message : 'This photo could not be opened.'
+    const text = error instanceof ImageProcessError ? error.message : DECODE_MESSAGE
     scope.postMessage({ kind: 'failed', id: message.id, message: text })
   }
 }
