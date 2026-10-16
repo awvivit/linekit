@@ -27,7 +27,7 @@ npm run test:e2e
 - The Pages base path is `/linekit/`. Change it in `src/brand.ts` if the repository name changes.
 - Dependencies must use an identified license. GPL, AGPL, LGPL, SSPL, and unknown licenses fail CI.
 - An SPDX `OR` expression is acceptable when one side is an allowed license. `AND` with a forbidden license is not.
-- Potrace and other GPL-family tracers are not acceptable. Planned tracing libraries are imagetracerjs (public domain) and SVGO.
+- Potrace and other GPL-family tracers are not acceptable. Tracing uses imagetracerjs (public domain) and SVGO.
 - Do not configure Dependabot auto-merge.
 
 ## Pull requests

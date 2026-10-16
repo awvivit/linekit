@@ -2,7 +2,8 @@ const contentSecurityPolicy = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self'",
-  "img-src 'self'",
+  // blob: is the on-device preview for the photo and the traced SVG. No remote origins.
+  "img-src 'self' blob:",
   "font-src 'self'",
   "connect-src 'self'",
   "worker-src 'self'",
