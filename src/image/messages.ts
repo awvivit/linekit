@@ -15,6 +15,12 @@ export type TraceMessage = {
 export type WorkerRequest = LoadMessage | TraceMessage
 
 export type WorkerResponse =
-  | { kind: 'loaded'; id: number; width: number; height: number }
+  | {
+      kind: 'loaded'
+      id: number
+      width: number
+      height: number
+      preview: ArrayBuffer
+    }
   | { kind: 'traced'; id: number; svg: string }
   | { kind: 'failed'; id: number; message: string }

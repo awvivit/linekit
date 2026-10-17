@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BOMB_MESSAGE, DEFAULT_CONTROLS, HEIC_MESSAGE, type Raster } from './limits.ts'
-import { preparePhoto, tracePrepared } from './process.ts'
+import { BOMB_MESSAGE, DEFAULT_CONTROLS, HEIC_MESSAGE, PREVIEW_EDGE, type Raster } from './limits.ts'
+import { buildPreview, preparePhoto, tracePrepared } from './process.ts'
 import { encodePng } from './png.ts'
 
 const SECRET = 'LKSECRET_9f3c2a7b_GPS_37.8199_-122.4783_vacation-gps-photo.jpg'
@@ -25,6 +25,16 @@ describe('preparePhoto', () => {
     expect(photo.height).toBe(6)
     expect(photo.raster.data[3 * 4]).toBe(0)
     expect(photo.raster.data[0]).toBe(255)
+  })
+})
+
+describe('buildPreview', () => {
+  it('keeps the original preview at about 2000 pixels on the long side', async () => {
+    const preview = await buildPreview(solid(2400, 1200, [240, 240, 240, 255]))
+    expect(Math.max(preview.width, preview.height)).toBeLessThanOrEqual(PREVIEW_EDGE)
+    expect(preview.width).toBe(2000)
+    expect(preview.height).toBe(1000)
+    expect(preview.bytes[0]).toBe(137)
   })
 })
 

@@ -7,6 +7,7 @@ import {
   HEIC_MESSAGE,
   ImageProcessError,
   MAX_EDGE,
+  PREVIEW_EDGE,
   TOO_LARGE_MESSAGE,
   exceedsByteCap,
   isDecompressionBomb,
@@ -14,7 +15,9 @@ import {
   type Raster,
   type TraceControls,
 } from './limits.ts'
+import { encodePng } from './png.ts'
 import { applyOrientation, cleanDrawing, cropNormalized, downscaleRaster } from './raster.ts'
+import { traceCenterline } from './centerline.ts'
 import { vectorize } from './vectorize.ts'
 
 export type PreparedPhoto = {
@@ -68,5 +71,14 @@ export async function preparePhoto(
 export function tracePrepared(photo: PreparedPhoto, controls: TraceControls): string {
   const cropped = cropNormalized(photo.raster, controls.crop)
   const binary = cleanDrawing(cropped, controls.darkness, controls.specks)
-  return vectorize(binary, controls.smoothing)
+  if (controls.cleanup === false) return vectorize(binary, controls.smoothing)
+  return traceCenterline(binary, controls.smoothing)
+}
+
+export async function buildPreview(
+  raster: Raster,
+  maxEdge = PREVIEW_EDGE,
+): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+  const scaled = downscaleRaster(raster, maxEdge)
+  return { bytes: await encodePng(scaled), width: scaled.width, height: scaled.height }
 }

@@ -20,7 +20,7 @@ describe('App', () => {
     expect(document.title).toBe(site.name)
   })
 
-  it('shows the SVG safety failure from the worker', async () => {
+  it('traces a photo in the worker', async () => {
     const previousWorker = globalThis.Worker
     const previousPostMessage = globalThis.postMessage
     const replies = new EventTarget()
@@ -58,10 +58,60 @@ describe('App', () => {
       Object.defineProperty(input, 'files', { configurable: true, value: [file] })
       fireEvent.change(input)
 
-      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't make a safe SVG from this photo.")
+      expect(await screen.findByRole('img', { name: 'Traced line art' })).toBeInTheDocument()
+      expect(screen.getByRole('checkbox', { name: 'Clean up lines' })).toBeChecked()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     } finally {
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
       globalThis.postMessage = previousPostMessage
+    }
+  })
+
+  it('shows the SVG safety failure from the worker', async () => {
+    const previousWorker = globalThis.Worker
+    class FakeWorker extends EventTarget {
+      constructor(_url: string | URL, _options?: WorkerOptions) {
+        super()
+      }
+
+      postMessage(data: { kind: string; id: number }) {
+        if (data.kind === 'load') {
+          this.dispatchEvent(
+            new MessageEvent('message', {
+              data: {
+                kind: 'loaded',
+                id: data.id,
+                width: 2,
+                height: 2,
+                preview: new Uint8Array([137, 80, 78, 71]).buffer,
+              },
+            }),
+          )
+          return
+        }
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: { kind: 'failed', id: data.id, message: "Couldn't make a safe SVG from this photo." },
+          }),
+        )
+      }
+
+      terminate() {}
+    }
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker })
+
+    try {
+      render(<App />)
+      const data = new Uint8ClampedArray(16).fill(255)
+      const png = await encodePng({ width: 2, height: 2, data })
+      const file = new File([new Uint8Array(png)], 'drawing.png', { type: 'image/png' })
+      const input = screen.getByLabelText(/choose a photo or drop it here/i)
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      fireEvent.change(input)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't make a safe SVG from this photo.")
+    } finally {
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
     }
   })
 })

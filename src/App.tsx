@@ -30,19 +30,18 @@ export default function App() {
   const [darkness, setDarkness] = useState(DEFAULT_CONTROLS.darkness)
   const [smoothing, setSmoothing] = useState(DEFAULT_CONTROLS.smoothing)
   const [specks, setSpecks] = useState(DEFAULT_CONTROLS.specks)
+  const [cleanup, setCleanup] = useState(DEFAULT_CONTROLS.cleanup)
   const [crop, setCrop] = useState<NormalizedCrop>(FULL_CROP)
 
   useEffect(() => {
     document.title = site.name
-    const session = createTraceSession()
-    sessionRef.current = session
     const prevent = (event: DragEvent) => {
       if (event.dataTransfer?.types.includes('Files')) event.preventDefault()
     }
     window.addEventListener('dragover', prevent)
     window.addEventListener('drop', prevent)
     return () => {
-      session.dispose()
+      sessionRef.current?.dispose()
       sessionRef.current = null
       if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current)
       window.removeEventListener('dragover', prevent)
@@ -67,7 +66,7 @@ export default function App() {
   useEffect(() => {
     const session = sessionRef.current
     if (!originalUrl || !session) return
-    const controls = { darkness, smoothing, specks, crop }
+    const controls = { darkness, smoothing, specks, crop, cleanup }
     const timer = window.setTimeout(() => {
       const id = ++traceId.current
       setTracing(true)
@@ -85,7 +84,7 @@ export default function App() {
         })
     }, 80)
     return () => window.clearTimeout(timer)
-  }, [originalUrl, photoKey, darkness, smoothing, specks, crop])
+  }, [originalUrl, photoKey, darkness, smoothing, specks, crop, cleanup])
 
   async function openFile(file: File) {
     const id = ++loadId.current
@@ -108,16 +107,15 @@ export default function App() {
         setError(inspection.message)
         return
       }
-      const session = sessionRef.current
-      if (!session) {
-        setError(DECODE_MESSAGE)
-        return
-      }
-      await session.load(buffer)
+      const session = sessionRef.current ?? createTraceSession()
+      sessionRef.current = session
+      const loaded = await session.load(buffer)
       if (id !== loadId.current) return
       publishSvg(null)
       setCrop(FULL_CROP)
-      setOriginalUrl(URL.createObjectURL(file))
+      const preview = new Uint8Array(loaded.preview.byteLength)
+      preview.set(loaded.preview)
+      setOriginalUrl(URL.createObjectURL(new Blob([preview], { type: 'image/png' })))
       setPhotoKey((value) => value + 1)
     } catch (reason) {
       if (id !== loadId.current) return
@@ -191,6 +189,15 @@ export default function App() {
 
       {originalUrl ? (
         <section className="workspace" aria-label="Trace">
+          <div className="switch-row">
+            <input
+              id="clean-up-lines"
+              type="checkbox"
+              checked={cleanup}
+              onChange={(event) => setCleanup(event.currentTarget.checked)}
+            />
+            <label htmlFor="clean-up-lines">Clean up lines</label>
+          </div>
           <div className="sliders">
             <Slider id="line-darkness" label="Line darkness" value={darkness} onChange={setDarkness} />
             <Slider id="smoothing" label="Smoothing" value={smoothing} onChange={setSmoothing} />

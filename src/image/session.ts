@@ -2,8 +2,14 @@ import { DECODE_MESSAGE, ImageProcessError, type TraceControls } from './limits.
 import type { WorkerResponse } from './messages.ts'
 import type { PreparedPhoto } from './process.ts'
 
+export type LoadedPhoto = {
+  width: number
+  height: number
+  preview: Uint8Array
+}
+
 export type TraceSession = {
-  load: (buffer: ArrayBuffer) => Promise<{ width: number; height: number }>
+  load: (buffer: ArrayBuffer) => Promise<LoadedPhoto>
   trace: (controls: TraceControls) => Promise<string>
   dispose: () => void
 }
@@ -24,9 +30,10 @@ function createLocalSession(): TraceSession {
   let photo: PreparedPhoto | null = null
   return {
     async load(buffer) {
-      const { preparePhoto } = await import('./process.ts')
+      const { preparePhoto, buildPreview } = await import('./process.ts')
       photo = await preparePhoto(new Uint8Array(buffer))
-      return { width: photo.width, height: photo.height }
+      const preview = await buildPreview(photo.raster)
+      return { width: photo.width, height: photo.height, preview: preview.bytes }
     },
     async trace(controls) {
       if (!photo) throw new ImageProcessError('decode', 'Choose a photo first.')
@@ -62,7 +69,7 @@ function createWorkerSession(worker: Worker): TraceSession {
       const response = await post({ kind: 'load', id: ++nextId, buffer }, [buffer])
       if (response.kind === 'failed') throw new ImageProcessError('decode', response.message)
       if (response.kind !== 'loaded') throw new ImageProcessError('decode', DECODE_MESSAGE)
-      return { width: response.width, height: response.height }
+      return { width: response.width, height: response.height, preview: new Uint8Array(response.preview) }
     },
     async trace(controls) {
       const response = await post({ kind: 'trace', id: ++nextId, controls })

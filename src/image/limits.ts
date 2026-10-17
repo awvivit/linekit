@@ -1,6 +1,9 @@
 /** Longest side of the raster that is traced, in pixels. */
 export const MAX_EDGE = 4000
 
+/** Longest side of the original photo shown beside the trace, in pixels. */
+export const PREVIEW_EDGE = 2000
+
 /** Reject files larger than this before they are decoded. */
 export const MAX_BYTES = 32 * 1024 * 1024
 
@@ -49,6 +52,8 @@ export type TraceControls = {
   smoothing: number
   specks: number
   crop: NormalizedCrop
+  /** Stroked centerlines. False keeps the filled outline trace. */
+  cleanup: boolean
 }
 
 export const DEFAULT_CONTROLS: TraceControls = {
@@ -56,6 +61,7 @@ export const DEFAULT_CONTROLS: TraceControls = {
   smoothing: 28,
   specks: 35,
   crop: FULL_CROP,
+  cleanup: true,
 }
 
 export type Raster = {
