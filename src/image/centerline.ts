@@ -1,5 +1,5 @@
 import { optimize } from 'svgo/browser'
-import type { BinaryImage } from './limits.ts'
+import { CleanupTimeoutError, type BinaryImage } from './limits.ts'
 import { sanitizeSvg } from './sanitize.ts'
 import { closeInk, estimatePenWidth, zhangSuenThin } from './skeleton.ts'
 
@@ -25,20 +25,42 @@ const NEIGHBORS: ReadonlyArray<readonly [number, number]> = [
   [1, -1],
 ]
 
+export type CenterlineModel = {
+  width: number
+  height: number
+  penWidth: number
+  chains: Chain[]
+}
+
 /**
  * Turn a binary drawing into stroked centerlines.
  * Parallel runs within about one pen width become one path, short spurs are
  * dropped, and each remaining run is fit with as few cubics as the smoothing
  * tolerance allows.
  */
-export function traceCenterline(image: BinaryImage, smoothing: number): string {
+export function traceCenterline(
+  image: BinaryImage,
+  smoothing: number,
+  deadline = Number.POSITIVE_INFINITY,
+): string {
+  return renderCenterline(buildCenterline(image, deadline), smoothing)
+}
+
+/** Skeleton, joins, and pruning. Smoothing is applied later by `renderCenterline`. */
+export function buildCenterline(image: BinaryImage, deadline = Number.POSITIVE_INFINITY): CenterlineModel {
+  ensureTime(deadline)
   const penWidth = estimatePenWidth(image)
   const radius = Math.max(1, Math.round(penWidth * 0.5))
   const closed = closeInk(image, radius)
-  let skeleton = zhangSuenThin(closed)
-  if (inkCount(skeleton) === 0) skeleton = zhangSuenThin(image)
-  clearBlocks(skeleton, image.width, image.height)
+  ensureTime(deadline)
+  let skeleton = zhangSuenThin(closed, deadline)
+  if (inkCount(skeleton) === 0) skeleton = zhangSuenThin(image, deadline)
+  clearBlocks(skeleton, image.width, image.height, deadline)
   let chains = traceChains(skeleton, image.width, image.height)
+  // A thick corner is a blob of junction pixels. Its two stroke ends are a few
+  // pixels apart, and the pen stroke hides that break. Walk the blob so the
+  // path data stays one line.
+  chains = dissolveJunctionClusters(chains, penWidth)
   const minLength = Math.max(8, penWidth * 2)
   chains = pruneShort(chains, minLength)
   chains = chains.map((chain) => ({
@@ -46,14 +68,30 @@ export function traceCenterline(image: BinaryImage, smoothing: number): string {
     closed: chain.closed,
   }))
   chains = pruneShort(chains, minLength)
-  chains = mergeParallel(chains, penWidth * 2.15)
-  chains = bridgeCrossings(chains)
+  // Centerlines of a doubled stroke sit about two radii apart, which is one pen of paper between the passes.
+  chains = mergeParallel(chains, penWidth * 2, deadline)
   chains = chains.filter((chain) => chain.closed || polylineLength(chain.points) >= minLength)
   const maxGap = Math.max(penWidth * 3.6, 14)
   chains = dropFoldedSpurs(chains, penWidth, maxGap)
-  chains = joinGaps(chains, maxGap)
+  chains = chains.map((chain) =>
+    chain.closed ? chain : { points: trimHooks(chain.points, minLength, penWidth), closed: false },
+  )
+  ensureTime(deadline)
+  chains = bridgeCrossings(chains)
+  chains = joinGaps(chains, maxGap, deadline)
+  chains = mergeParallel(chains, penWidth * 2, deadline)
+  chains = extendToHost(chains, CLOSE_GAP)
+  chains = joinGaps(chains, maxGap, deadline)
   chains = chains.filter((chain) => polylineLength(chain.points) >= Math.min(minLength, penWidth))
-  return publishSvg(image.width, image.height, chains, penWidth, smoothing)
+  return { width: image.width, height: image.height, penWidth, chains }
+}
+
+export function renderCenterline(model: CenterlineModel, smoothing: number): string {
+  return publishSvg(model.width, model.height, model.chains, model.penWidth, smoothing)
+}
+
+function ensureTime(deadline: number): void {
+  if (Date.now() > deadline) throw new CleanupTimeoutError()
 }
 
 function publishSvg(
@@ -99,9 +137,10 @@ function publishSvg(
 }
 
 function chainToPath(chain: Chain, tolerance: number, penWidth: number): string {
-  const simplified = simplify(dedupe(chain.points), 0.55)
+  const cleaned = removeMicroLoops(dedupe(chain.points), chain.closed, penWidth)
+  const simplified = simplify(cleaned, 0.55)
   if (simplified.length < 2) return ''
-  const pieces = splitAtCorners(simplified, chain.closed, Math.max(1, Math.round(penWidth * 0.45)))
+  const pieces = splitAtCorners(simplified, chain.closed, cornerSpan(simplified, penWidth))
   const commands: DrawCommand[] = []
   for (const piece of pieces) {
     commands.push(...fitPiece(piece, tolerance, 0))
@@ -314,9 +353,16 @@ function maxChordDistance(points: Point[]): number {
   return farthest
 }
 
+/** Corner window in points. Dense skeleton noise needs several pixels; a simplified vertex is already one point. */
+function cornerSpan(points: Point[], penWidth: number): number {
+  const spacing = polylineLength(points) / Math.max(1, points.length - 1)
+  const pixels = Math.max(6, penWidth * 0.85)
+  return Math.max(1, Math.min(Math.round(pixels / Math.max(spacing, 1)), Math.floor((points.length - 1) / 3)))
+}
+
 function splitAtCorners(points: Point[], closed: boolean, span: number): Point[][] {
   if (points.length < 3) return [points]
-  const step = closed ? span : Math.min(span, Math.max(1, Math.floor((points.length - 1) / 4)))
+  const step = Math.max(1, Math.min(span, Math.floor((points.length - 1) / 3)))
   const corners: number[] = []
   const last = closed ? points.length : points.length - 1
   for (let index = closed ? 0 : step; index < last; index += 1) {
@@ -452,6 +498,203 @@ function walk(
   return { points: closed ? points.slice(0, -1) : dedupe(points), closed }
 }
 
+/** Centers of 8-connected skeleton pixels are at most this far apart. */
+const NEIGHBOR_GAP = Math.SQRT2 + 0.05
+
+/**
+ * Join the two strokes that leave a thick corner or crossing blob.
+ * Endpoints on neighboring pixels are one joint. A blob with two long arms
+ * is a corner: the path follows the short pieces through it. Three or more
+ * long arms stay separate so a T or a crossing can be paired later.
+ */
+function dissolveJunctionClusters(chains: Chain[], penWidth: number): Chain[] {
+  let current = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
+  const blocked = new Set<string>()
+  const fillerLimit = Math.max(18, penWidth * 3)
+  const spurLimit = Math.max(8, penWidth * 2)
+  for (let guard = 0; guard < chains.length + 2; guard += 1) {
+    const cluster = twoArmCluster(current, fillerLimit, spurLimit, blocked)
+    if (!cluster) break
+    const joined = stitchCluster(current, cluster)
+    if (!joined) {
+      blocked.add(cluster.key)
+      continue
+    }
+    current = joined
+  }
+  return current
+}
+
+function twoArmCluster(
+  chains: Chain[],
+  fillerLimit: number,
+  spurLimit: number,
+  blocked: Set<string>,
+): { key: string; left: Endpoint; right: Endpoint; drop: number[] } | null {
+  const ends = openEnds(chains)
+  const parent = ends.map((_, index) => index)
+  const find = (index: number): number => {
+    let cursor = index
+    while (parent[cursor] !== cursor) {
+      const next = parent[cursor] ?? cursor
+      parent[cursor] = parent[next] ?? next
+      cursor = parent[cursor] ?? cursor
+    }
+    return cursor
+  }
+  const unite = (left: number, right: number) => {
+    const rootLeft = find(left)
+    const rootRight = find(right)
+    if (rootLeft !== rootRight) parent[rootLeft] = rootRight
+  }
+  const cell = NEIGHBOR_GAP
+  const grid = new Map<string, number[]>()
+  ends.forEach((end, index) => {
+    const point = endpointOf(chains, end)
+    if (!point) return
+    const key = `${Math.floor(point.x / cell)}:${Math.floor(point.y / cell)}`
+    const bucket = grid.get(key)
+    if (bucket) bucket.push(index)
+    else grid.set(key, [index])
+  })
+  for (let index = 0; index < ends.length; index += 1) {
+    const end = ends[index]
+    const point = end ? endpointOf(chains, end) : null
+    if (!end || !point) continue
+    const cellX = Math.floor(point.x / cell)
+    const cellY = Math.floor(point.y / cell)
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        const bucket = grid.get(`${cellX + offsetX}:${cellY + offsetY}`)
+        if (!bucket) continue
+        for (const otherIndex of bucket) {
+          if (otherIndex <= index) continue
+          const other = ends[otherIndex]
+          const otherPoint = other ? endpointOf(chains, other) : null
+          if (!other || !otherPoint || distance(point, otherPoint) > NEIGHBOR_GAP) continue
+          if (end.chain === other.chain && polylineLength(chains[end.chain]?.points ?? []) > NEIGHBOR_GAP * 2) continue
+          unite(index, otherIndex)
+        }
+      }
+    }
+  }
+  const groups = new Map<number, number[]>()
+  for (let index = 0; index < ends.length; index += 1) {
+    const root = find(index)
+    const group = groups.get(root)
+    if (group) group.push(index)
+    else groups.set(root, [index])
+  }
+  for (const indexes of groups.values()) {
+    if (indexes.length < 2) continue
+    const byChain = new Map<number, Endpoint[]>()
+    for (const index of indexes) {
+      const end = ends[index]
+      if (!end) continue
+      const group = byChain.get(end.chain)
+      if (group) group.push(end)
+      else byChain.set(end.chain, [end])
+    }
+    const external: Endpoint[] = []
+    const drop = new Set<number>()
+    for (const [chainIndex, chainEnds] of byChain) {
+      const chain = chains[chainIndex]
+      if (!chain) continue
+      const hasStart = chainEnds.some((end) => end.atStart)
+      const hasEnd = chainEnds.some((end) => !end.atStart)
+      const length = polylineLength(chain.points)
+      if (hasStart && hasEnd) {
+        if (length <= fillerLimit) drop.add(chainIndex)
+        continue
+      }
+      const end = chainEnds[0]
+      if (!end) continue
+      if (length < spurLimit) drop.add(chainIndex)
+      else external.push(end)
+    }
+    if (external.length !== 2) continue
+    const left = external[0]
+    const right = external[1]
+    if (!left || !right || left.chain === right.chain) continue
+    const chainA = chains[left.chain]
+    const chainB = chains[right.chain]
+    if (!chainA || !chainB) continue
+    const tangentA = outwardTangent(chainA.points, left.atStart)
+    const tangentB = outwardTangent(chainB.points, right.atStart)
+    if (tangentA && tangentB && dot(tangentA, tangentB) > 0.45) continue
+    const pointA = endpointPoint(chainA, left.atStart)
+    const pointB = endpointPoint(chainB, right.atStart)
+    const keyA = pointKey(pointA)
+    const keyB = pointKey(pointB)
+    const key = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`
+    if (blocked.has(key)) continue
+    drop.add(left.chain)
+    drop.add(right.chain)
+    return { key, left, right, drop: [...drop] }
+  }
+  return null
+}
+
+function stitchCluster(chains: Chain[], cluster: { left: Endpoint; right: Endpoint; drop: number[] }): Chain[] | null {
+  const chainA = chains[cluster.left.chain]
+  const chainB = chains[cluster.right.chain]
+  if (!chainA || !chainB) return null
+  const head = cluster.left.atStart ? [...chainA.points].reverse() : chainA.points.slice()
+  const tail = cluster.right.atStart ? chainB.points.slice() : [...chainB.points].reverse()
+  const fillers = cluster.drop.flatMap((index) => {
+    if (index === cluster.left.chain || index === cluster.right.chain) return []
+    const chain = chains[index]
+    return chain ? [chain] : []
+  })
+  const through = stitchFillers(at(head, head.length - 1), at(tail, 0), fillers)
+  if (!through && distance(at(head, head.length - 1), at(tail, 0)) > NEIGHBOR_GAP) return null
+  const points = dedupe([...head, ...(through ? through.slice(1) : []), ...tail])
+  if (points.length < 2) return null
+  const closed = points.length > 3 && distance(at(points, 0), at(points, points.length - 1)) <= NEIGHBOR_GAP
+  const drop = new Set(cluster.drop)
+  const next = chains.filter((_, index) => !drop.has(index))
+  next.push({ points: closed ? points.slice(0, -1) : points, closed })
+  return next
+}
+
+/** Walk short junction pieces from `start` to `target`, or null when they do not connect. */
+function stitchFillers(start: Point, target: Point, fillers: Chain[]): Point[] | null {
+  if (distance(start, target) <= NEIGHBOR_GAP) return [start]
+  const remaining = fillers.map((chain) => chain.points.slice())
+  const points = [start]
+  let cursor = start
+  for (let guard = 0; guard < fillers.length + 1; guard += 1) {
+    if (distance(cursor, target) <= NEIGHBOR_GAP) return points
+    let best = -1
+    let flip = false
+    let bestDistance = NEIGHBOR_GAP
+    for (let index = 0; index < remaining.length; index += 1) {
+      const piece = remaining[index]
+      if (!piece || piece.length === 0) continue
+      const toStart = distance(cursor, at(piece, 0))
+      const toEnd = distance(cursor, at(piece, piece.length - 1))
+      if (toStart <= bestDistance) {
+        bestDistance = toStart
+        best = index
+        flip = false
+      }
+      if (toEnd < bestDistance) {
+        bestDistance = toEnd
+        best = index
+        flip = true
+      }
+    }
+    if (best < 0) return null
+    const piece = remaining[best]
+    if (!piece) return null
+    const sequence = flip ? [...piece].reverse() : piece
+    points.push(...sequence)
+    cursor = at(sequence, sequence.length - 1)
+    remaining.splice(best, 1)
+  }
+  return distance(cursor, target) <= NEIGHBOR_GAP ? points : null
+}
+
 function pruneShort(chains: Chain[], minLength: number): Chain[] {
   let edges = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
   for (let guard = 0; guard < chains.length + 2; guard += 1) {
@@ -545,28 +788,35 @@ function trimHooks(points: Point[], maxHook: number, penWidth: number): Point[] 
 
 function trimHookEnd(points: Point[], maxHook: number, penWidth: number): Point[] {
   if (points.length < 8) return points
+  const limit = Math.max(maxHook, penWidth * 2.5)
   const tip = at(points, 0)
   let arc = 0
   let farthest = 0
   let farthestDistance = 0
-  for (let index = 1; index < points.length; index += 1) {
+  for (let index = 1; index < points.length - 1; index += 1) {
     arc += distance(at(points, index - 1), at(points, index))
+    if (arc > limit) break
     const tipDistance = distance(tip, at(points, index))
     if (tipDistance > farthestDistance) {
       farthestDistance = tipDistance
       farthest = index
     }
-    if (arc <= maxHook && tipDistance < penWidth * 0.85 && farthestDistance > tipDistance * 1.8 && farthest > 2) {
+    if (
+      index > 2 &&
+      tipDistance < Math.max(4, penWidth * 1.4) &&
+      farthestDistance > tipDistance * 1.45 &&
+      farthest > 2
+    ) {
       return points.slice(farthest)
     }
-    if (arc > maxHook) break
   }
   return points
 }
 
-function mergeParallel(chains: Chain[], maxDistance: number): Chain[] {
+function mergeParallel(chains: Chain[], maxDistance: number, deadline = Number.POSITIVE_INFINITY): Chain[] {
   let current = chains.slice()
   for (let guard = 0; guard < chains.length + 1; guard += 1) {
+    ensureTime(deadline)
     let merged = false
     for (let left = 0; left < current.length && !merged; left += 1) {
       for (let right = left + 1; right < current.length; right += 1) {
@@ -593,7 +843,8 @@ function tryMerge(first: Chain, second: Chain, maxDistance: number): Chain | nul
   const secondary = primary === first ? second : first
   const oriented = orientParallel(primary.points, secondary.points)
   if (!oriented) return null
-  const hits = primary.points.map((point) => nearestAligned(oriented, point, maxDistance))
+  const grid = buildPointGrid(oriented, maxDistance)
+  const hits = primary.points.map((point) => nearestAligned(oriented, point, maxDistance, grid))
   const run = longestRun(hits)
   if (!run || run.end - run.start < 4) return null
   const matched = hits.slice(run.start, run.end + 1).filter((hit) => hit !== null).length
@@ -605,15 +856,29 @@ function tryMerge(first: Chain, second: Chain, maxDistance: number): Chain | nul
   const secondaryStart = Math.min(...secondaryIndexes)
   const secondaryEnd = Math.max(...secondaryIndexes)
   if (secondaryEnd - secondaryStart + 1 < oriented.length * 0.55) return null
-  const points = primary.points.map((point, index) => {
+  const averaged: Point[] = []
+  let averagedJumped = false
+  for (let index = 0; index < primary.points.length; index += 1) {
+    const point = at(primary.points, index)
     const hit = hits[index]
-    if (!hit || index < run.start || index > run.end) return point
-    return midpoint(point, hit.point)
-  })
+    const next = hit && index >= run.start && index <= run.end ? midpoint(point, hit.point) : point
+    const previous = averaged[averaged.length - 1]
+    if (previous && distance(previous, next) > 2.5) averagedJumped = true
+    averaged.push(next)
+  }
+  // Crossing lines can pull a midpoint off the stroke and open a gap the pen hides.
+  const points = averagedJumped ? primary.points.slice() : averaged
   const prefix = oriented.slice(0, secondaryStart)
   const suffix = oriented.slice(secondaryEnd + 1)
+  // Leftover tails have to meet the merged stroke. A tail that starts elsewhere
+  // is a different line, and concatenating it opens a gap the pen would hide.
+  if (prefix.length > 1 && (run.start > 0 || distance(at(prefix, prefix.length - 1), at(points, 0)) > 4)) return null
+  if (suffix.length > 1 && (run.end < points.length - 1 || distance(at(points, points.length - 1), at(suffix, 0)) > 4)) return null
   const withPrefix = prefix.length > 1 ? dedupe([...prefix, ...points]) : points
   const combined = suffix.length > 1 ? dedupe([...withPrefix, ...suffix]) : withPrefix
+  if (combined.length < 2) return null
+  // A merge that folds the two passes into a loop becomes a closed rectangle later.
+  if (distance(at(combined, 0), at(combined, combined.length - 1)) <= Math.max(maxDistance * 2, 8)) return null
   return { points: combined, closed: false }
 }
 
@@ -656,18 +921,40 @@ function orientParallel(primary: Point[], secondary: Point[]): Point[] | null {
   return dot(primaryTangent, secondaryTangent) < 0 ? [...secondary].reverse() : secondary.slice()
 }
 
+function buildPointGrid(points: Point[], cell: number): Map<string, number[]> {
+  const grid = new Map<string, number[]>()
+  const size = Math.max(cell, 1)
+  points.forEach((point, index) => {
+    const key = `${Math.floor(point.x / size)}:${Math.floor(point.y / size)}`
+    const bucket = grid.get(key)
+    if (bucket) bucket.push(index)
+    else grid.set(key, [index])
+  })
+  return grid
+}
+
 function nearestAligned(
   points: Point[],
   point: Point,
   maxDistance: number,
+  grid: Map<string, number[]>,
 ): { point: Point; index: number } | null {
+  const size = Math.max(maxDistance, 1)
+  const column = Math.floor(point.x / size)
+  const row = Math.floor(point.y / size)
   let best = -1
   let bestDistance = maxDistance
-  for (let index = 0; index < points.length; index += 1) {
-    const gap = distance(point, at(points, index))
-    if (gap <= bestDistance) {
-      bestDistance = gap
-      best = index
+  for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      const bucket = grid.get(`${column + offsetX}:${row + offsetY}`)
+      if (!bucket) continue
+      for (const index of bucket) {
+        const gap = distance(point, at(points, index))
+        if (gap <= bestDistance) {
+          bestDistance = gap
+          best = index
+        }
+      }
     }
   }
   if (best < 0) return null
@@ -691,7 +978,85 @@ function longestRun(hits: Array<{ point: Point; index: number } | null>): { star
 
 type Endpoint = { chain: number; atStart: boolean }
 
-const CROSSING_DOT = -Math.cos((48 * Math.PI) / 180)
+const JUNCTION_RADIUS = 12
+
+/** Outward tangents more opposite than this continue through a junction. */
+const STRAIGHT_DOT = -0.25
+
+/** Gaps this small are one stroke, including the 7px and 8.5px corner breaks. */
+const CLOSE_GAP = 10
+
+/**
+ * An endpoint a few pixels off another stroke is still the same corner in the
+ * ink. Continue it into that stroke. A stem that meets a straight crossbar at
+ * a right angle stays its own path.
+ */
+function extendToHost(chains: Chain[], limit: number): Chain[] {
+  let current = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
+  const span = 6
+  for (let guard = 0; guard < chains.length + 2; guard += 1) {
+    let acted = false
+    const ends = openEnds(current)
+    for (const end of ends) {
+      const guest = current[end.chain]
+      if (!guest || guest.points.length < 2) continue
+      const point = endpointPoint(guest, end.atStart)
+      let hostIndex = -1
+      let touchAt = -1
+      let best = Number.POSITIVE_INFINITY
+      for (let index = 0; index < current.length; index += 1) {
+        if (index === end.chain) continue
+        const host = current[index]
+        if (!host || host.points.length < span * 2 + 1) continue
+        for (let pointIndex = span; pointIndex < host.points.length - span; pointIndex += 1) {
+          const sample = host.points[pointIndex]
+          if (!sample) continue
+          const gap = distance(point, sample)
+          if (gap <= limit && gap < best) {
+            best = gap
+            hostIndex = index
+            touchAt = pointIndex
+          }
+        }
+      }
+      if (hostIndex < 0 || touchAt < 0) continue
+      const host = current[hostIndex]
+      if (!host) continue
+      const turn = turnDot(host.points, touchAt, span, false)
+      const outward = outwardTangent(guest.points, end.atStart)
+      const toward = unit(subtract(at(host.points, touchAt), point))
+      if (!outward || !toward || dot(outward, toward) < 0.35) continue
+      const leftOut = unit(subtract(at(host.points, touchAt), at(host.points, touchAt - span)))
+      const rightOut = unit(subtract(at(host.points, touchAt), at(host.points, touchAt + span)))
+      if (!leftOut || !rightOut) continue
+      const hostTangent = tangentAt(host.points, touchAt)
+      // A stem arriving sideways on a straight bar is a T, not a broken corner.
+      if (turn > 0.55 && hostTangent && Math.abs(dot(hostTangent, outward)) < 0.15) continue
+      const leftScore = dot(leftOut, outward)
+      const rightScore = dot(rightOut, outward)
+      const joinLeft = leftScore <= rightScore
+      const arm = joinLeft ? host.points.slice(0, touchAt + 1) : host.points.slice(touchAt)
+      const rest = joinLeft ? host.points.slice(touchAt) : host.points.slice(0, touchAt + 1)
+      const joined = concatEndpoints(
+        { points: arm, closed: false },
+        !joinLeft,
+        guest,
+        end.atStart,
+        true,
+        limit,
+      )
+      const pieces: Chain[] = [joined]
+      if (polylineLength(rest) >= 8) pieces.push({ points: rest, closed: false })
+      const drop = new Set([hostIndex, end.chain])
+      current = current.filter((_, index) => !drop.has(index)).concat(pieces)
+      acted = true
+      break
+    }
+    if (!acted) break
+  }
+  return current
+}
+
 
 /**
  * At a junction where three or more strokes meet, continue the pairs that pass
@@ -726,7 +1091,7 @@ function crossingCluster(chains: Chain[]): Endpoint[] | null {
     if (!originPoint) continue
     const cluster = ends.filter((end) => {
       const point = endpointOf(chains, end)
-      return point !== null && distance(originPoint, point) <= 2.5
+      return point !== null && distance(originPoint, point) <= JUNCTION_RADIUS
     })
     if (cluster.length >= 3 && collinearPair(chains, cluster)) return cluster
   }
@@ -750,17 +1115,18 @@ function collinearPair(
       const tangentB = outwardTangent(chainB.points, b.atStart)
       if (!tangentA || !tangentB) continue
       const score = dot(tangentA, tangentB)
-      if (score > CROSSING_DOT) continue
+      if (score > STRAIGHT_DOT) continue
       if (!best || score < best.score) best = { left: a, right: b, score }
     }
   }
   return best ? { left: best.left, right: best.right } : null
 }
 
-function joinGaps(chains: Chain[], maxGap: number): Chain[] {
+function joinGaps(chains: Chain[], maxGap: number, deadline = Number.POSITIVE_INFINITY): Chain[] {
   let current = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
   const blocked = new Set<string>()
   for (let guard = 0; guard < chains.length * 2 + 2; guard += 1) {
+    ensureTime(deadline)
     const pair = closestEndpoints(current, maxGap, blocked)
     if (!pair) break
     const left = current[pair.left.chain]
@@ -809,10 +1175,10 @@ function closestEndpoints(
 function crossingLeftover(chains: Chain[], ends: Endpoint[], a: Endpoint, b: Endpoint): boolean {
   const pointA = endpointOf(chains, a)
   const pointB = endpointOf(chains, b)
-  if (!pointA || !pointB || distance(pointA, pointB) > 2.5) return false
+  if (!pointA || !pointB || distance(pointA, pointB) > JUNCTION_RADIUS) return false
   const cluster = ends.filter((end) => {
     const point = endpointOf(chains, end)
-    return point !== null && distance(pointA, point) <= 2.5
+    return point !== null && distance(pointA, point) <= JUNCTION_RADIUS
   })
   return cluster.length >= 3 && collinearPair(chains, cluster) !== null
 }
@@ -854,17 +1220,37 @@ function dropFoldedSpurs(chains: Chain[], penWidth: number, maxGap: number): Cha
 
 const CORNER_PARALLEL = Math.cos((32 * Math.PI) / 180)
 
-/** Sharp corners meet end to end. A point back along the same stroke does not. */
+/**
+ * Sharp corners meet end to end, including a 7–9px break the pen stroke would hide.
+ * Parallel passes beside each other do not: that weld becomes a closed rectangle.
+ */
 function meetsEndToEnd(chains: Chain[], a: Endpoint, b: Endpoint, maxGap: number): boolean {
   const chainA = chains[a.chain]
   const chainB = chains[b.chain]
   if (!chainA || !chainB) return false
   const pointA = endpointPoint(chainA, a.atStart)
   const pointB = endpointPoint(chainB, b.atStart)
-  // Staggered skeleton ends at one corner sit a few pixels apart.
-  if (distance(pointA, pointB) < 6) return true
+  if (parallelBeside(chainA, a.atStart, chainB, b.atStart, pointA, pointB)) return false
+  if (distance(pointA, pointB) <= CLOSE_GAP) return true
   if (aimsToward(chainA, a.atStart, pointB) && aimsToward(chainB, b.atStart, pointA)) return true
   return overshotCorner(chainA, a.atStart, chainB, b.atStart, maxGap)
+}
+
+/** Two ends that sit beside each other and point the same way are separate passes. */
+function parallelBeside(
+  chainA: Chain,
+  atStartA: boolean,
+  chainB: Chain,
+  atStartB: boolean,
+  pointA: Point,
+  pointB: Point,
+): boolean {
+  const tangentA = outwardTangent(chainA.points, atStartA)
+  const tangentB = outwardTangent(chainB.points, atStartB)
+  const between = unit(subtract(pointB, pointA))
+  if (!tangentA || !tangentB || !between) return false
+  if (dot(tangentA, tangentB) < 0.55) return false
+  return Math.abs(dot(tangentA, between)) < 0.4 && Math.abs(dot(tangentB, between)) < 0.4
 }
 
 /**
@@ -912,7 +1298,7 @@ function aimsToward(chain: Chain, atStart: boolean, target: Point): boolean {
   const tangent = outwardTangent(chain.points, atStart)
   const toward = unit(subtract(target, origin))
   if (!tangent || !toward) return true
-  return dot(tangent, toward) > -0.35
+  return dot(tangent, toward) > -0.75
 }
 
 function endpointOf(chains: Chain[], end: Endpoint): Point | null {
@@ -970,7 +1356,18 @@ function concatEndpoints(
   if (!corner) return { points: dedupe([...a, ...b]), closed: false }
   const leftCut = cornerBehind(end, tangentA, corner) ? overshootIndex(a, false, corner, maxGap) : a.length - 1
   const rightCut = cornerBehind(start, tangentB, corner) ? overshootIndex(b, true, corner, maxGap) : 0
-  return { points: dedupe([...a.slice(0, leftCut + 1), corner, ...b.slice(rightCut)]), closed: false }
+  const cut = dedupe([...a.slice(0, leftCut + 1), corner, ...b.slice(rightCut)])
+  // Cutting past the tips can leap farther than the gap itself. Keep both polylines then.
+  if (longestStep(cut) > distance(end, start) + 1.5) return { points: dedupe([...a, ...b]), closed: false }
+  return { points: cut, closed: false }
+}
+
+function longestStep(points: Point[]): number {
+  let longest = 0
+  for (let index = 1; index < points.length; index += 1) {
+    longest = Math.max(longest, distance(at(points, index - 1), at(points, index)))
+  }
+  return longest
 }
 
 function cornerBehind(origin: Point, outward: Point, corner: Point): boolean {
@@ -1027,9 +1424,10 @@ function rayHit(originA: Point, directionA: Point, originB: Point, directionB: P
   return add(originA, scale(directionA, t))
 }
 
-function clearBlocks(skeleton: Uint8Array, width: number, height: number): void {
+function clearBlocks(skeleton: Uint8Array, width: number, height: number, deadline = Number.POSITIVE_INFINITY): void {
   let changed = true
   while (changed) {
+    ensureTime(deadline)
     changed = false
     for (let y = 0; y < height - 1; y += 1) {
       for (let x = 0; x < width - 1; x += 1) {
@@ -1060,6 +1458,30 @@ function neighborIndexes(skeleton: Uint8Array, width: number, height: number, in
     if (skeleton[next] === 1) found.push(next)
   }
   return found
+}
+
+/** Drop a tiny loop where the stroke passes back through itself. */
+function removeMicroLoops(points: Point[], closed: boolean, penWidth: number): Point[] {
+  const limit = Math.max(8, penWidth * 4)
+  let current = points.slice()
+  for (let guard = 0; guard < 6; guard += 1) {
+    let next: Point[] | null = null
+    for (let start = 0; start < current.length; start += 1) {
+      let arc = 0
+      for (let index = start + 4; index < current.length; index += 1) {
+        arc += distance(at(current, index - 1), at(current, index))
+        if (arc > limit) break
+        if (distance(at(current, start), at(current, index)) > 1.5) continue
+        if (closed && polylineLength(current) - arc < limit) break
+        next = dedupe([...current.slice(0, start + 1), ...current.slice(index)])
+        break
+      }
+      if (next) break
+    }
+    if (!next || next.length < 2) break
+    current = next
+  }
+  return current.length >= 2 ? current : points
 }
 
 function simplify(points: Point[], epsilon: number): Point[] {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { traceCenterline } from './centerline.ts'
-import type { BinaryImage } from './limits.ts'
+import { CLEANUP_TIMEOUT_MESSAGE, type BinaryImage } from './limits.ts'
+import { estimatePenWidth } from './skeleton.ts'
 import { vectorize } from './vectorize.ts'
 
 describe('centerline cleanup', () => {
@@ -105,6 +106,22 @@ describe('centerline cleanup', () => {
     }
   })
 
+  it('keeps a square closed when a corner is a thick blob', () => {
+    const image = blank(120, 120)
+    fill(image, 24, 24, 72, 8)
+    fill(image, 24, 88, 72, 8)
+    fill(image, 24, 24, 8, 72)
+    fill(image, 88, 24, 8, 72)
+    fill(image, 78, 78, 26, 26)
+    fill(image, 84, 20, 8, 76)
+    const svg = traceCenterline(image, 28)
+    expect(paths(svg)).toHaveLength(1)
+    const sampled = sample(paths(svg)[0] ?? '')
+    expect(sampled.closed).toBe(true)
+    expect(sampled.length).toBeGreaterThan(180)
+    expect(cornerCount(sampled.points, 45)).toBeGreaterThanOrEqual(4)
+  })
+
   it('keeps a doubled tip as one open stroke', () => {
     const image = blank(110, 48)
     fill(image, 8, 16, 90, 6)
@@ -128,6 +145,70 @@ describe('centerline cleanup', () => {
     expect(sampled.length).toBeGreaterThan(50)
     expect(near(sampled.points, 5, 5, 6)).toBe(false)
     expect(near(sampled.points, 89, 7, 6)).toBe(false)
+  })
+
+  it('joins a 7px edge gap and an 8px corner into one closed path', () => {
+    const image = blank(140, 140)
+    fill(image, 20, 20, 50, 6)
+    fill(image, 77, 20, 40, 6)
+    fill(image, 111, 34, 6, 76)
+    fill(image, 20, 104, 97, 6)
+    fill(image, 20, 20, 6, 90)
+    const data = paths(traceCenterline(image, 28))
+    expect(data).toHaveLength(1)
+    const path = data[0] ?? ''
+    expect(path).toMatch(/[Zz]/)
+    expect(openEnds(path)).toHaveLength(0)
+    const sampled = sample(path)
+    expect(sampled.closed).toBe(true)
+    expect(cornerCount(sampled.points, 45)).toBeGreaterThanOrEqual(4)
+  })
+
+  it('keeps a T junction as a crossbar and a separate stem', () => {
+    const image = blank(120, 100)
+    fill(image, 10, 36, 100, 6)
+    fill(image, 57, 36, 6, 50)
+    const data = paths(traceCenterline(image, 28))
+    expect(data).toHaveLength(2)
+    const lengths: number[] = []
+    for (const path of data) {
+      expect(path).not.toMatch(/[Zz]/)
+      expect(openEnds(path)).toHaveLength(2)
+      lengths.push(sample(path).length)
+    }
+    expect(Math.max(...lengths)).toBeGreaterThan(80)
+    expect(Math.min(...lengths)).toBeGreaterThan(30)
+  })
+
+  it('fits a circle with a few cubics and no micro-loop', () => {
+    const image = ring(120, 60, 60, 37, 6)
+    const data = paths(traceCenterline(image, 28))
+    expect(data).toHaveLength(1)
+    const path = data[0] ?? ''
+    expect(path).toMatch(/[Zz]/)
+    expect(openEnds(path)).toHaveLength(0)
+    expect(curveCount(path)).toBeGreaterThan(0)
+    expect(curveCount(path)).toBeLessThan(8)
+    expect(microLoops(sample(path).points, 2, 24)).toBe(0)
+  })
+
+  it('keeps parallel lines two pen widths apart as two open paths', () => {
+    const image = blank(200, 80)
+    fill(image, 8, 8, 160, 6)
+    const gap = Math.round(estimatePenWidth(image) * 2)
+    fill(image, 8, 8 + 6 + gap, 160, 6)
+    const data = paths(traceCenterline(image, 28))
+    expect(data).toHaveLength(2)
+    for (const path of data) {
+      expect(path).not.toMatch(/[Zz]/)
+      expect(openEnds(path)).toHaveLength(2)
+    }
+  })
+
+  it('stops when the cleanup deadline has passed', () => {
+    const image = blank(40, 20)
+    fill(image, 4, 6, 30, 6)
+    expect(() => traceCenterline(image, 28, Date.now() - 1)).toThrow(CLEANUP_TIMEOUT_MESSAGE)
   })
 
   it('uses fewer curves than the filled outline of the same ink', () => {
@@ -181,6 +262,19 @@ function drawOpenSquare(
   fill(image, x, y + size - thickness, size, thickness)
 }
 
+function ring(size: number, cx: number, cy: number, radius: number, thickness: number): BinaryImage {
+  const image = blank(size, size)
+  const outer = radius + thickness / 2
+  const inner = radius - thickness / 2
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const distance = Math.hypot(x - cx, y - cy)
+      if (distance >= inner && distance <= outer) image.ink[y * size + x] = 1
+    }
+  }
+  return image
+}
+
 function arc(
   width: number,
   height: number,
@@ -209,13 +303,104 @@ function paths(svg: string): string[] {
   return [...svg.matchAll(/\bd="([^"]*)"/g)].flatMap((match) => (match[1] ? [match[1]] : []))
 }
 
+/** Open endpoints of the path data. A closed subpath (Z) contributes none. */
+function openEnds(data: string): { x: number; y: number }[] {
+  const ends: { x: number; y: number }[] = []
+  for (const subpath of commandEnds(data)) {
+    if (!subpath.closed) ends.push(subpath.start, subpath.end)
+  }
+  return ends
+}
+
+function commandEnds(data: string): { start: { x: number; y: number }; end: { x: number; y: number }; closed: boolean }[] {
+  const pattern = /([MmLlHhVvCcSsQqTtZz])|(-?\d*\.?\d+(?:e[-+]?\d+)?)/gi
+  const subs: { start: { x: number; y: number }; end: { x: number; y: number }; closed: boolean }[] = []
+  let command = ''
+  let relative = false
+  const numbers: number[] = []
+  let cursor = { x: 0, y: 0 }
+  let start = { x: 0, y: 0 }
+  const gap: { open: { start: { x: number; y: number }; end: { x: number; y: number }; closed: boolean } | null } = {
+    open: null,
+  }
+  const flush = () => {
+    const arity =
+      command === 'M' || command === 'L' ? 2 : command === 'H' || command === 'V' ? 1 : command === 'C' ? 6 : command === 'S' || command === 'Q' ? 4 : 0
+    while (command && arity && numbers.length >= arity) {
+      const take = numbers.splice(0, arity)
+      if (command === 'M' || command === 'L') {
+        const x = relative ? cursor.x + (take[0] ?? 0) : (take[0] ?? 0)
+        const y = relative ? cursor.y + (take[1] ?? 0) : (take[1] ?? 0)
+        cursor = { x, y }
+        if (command === 'M') {
+          if (gap.open) subs.push(gap.open)
+          start = { x, y }
+          gap.open = { start, end: { x, y }, closed: false }
+          command = 'L'
+        } else if (gap.open) gap.open.end = { x, y }
+      } else if (command === 'H') {
+        cursor = { x: relative ? cursor.x + (take[0] ?? 0) : (take[0] ?? 0), y: cursor.y }
+        if (gap.open) gap.open.end = { ...cursor }
+      } else if (command === 'V') {
+        cursor = { x: cursor.x, y: relative ? cursor.y + (take[0] ?? 0) : (take[0] ?? 0) }
+        if (gap.open) gap.open.end = { ...cursor }
+      } else if (command === 'C' || command === 'S' || command === 'Q') {
+        const x = relative ? cursor.x + (take[arity - 2] ?? 0) : (take[arity - 2] ?? 0)
+        const y = relative ? cursor.y + (take[arity - 1] ?? 0) : (take[arity - 1] ?? 0)
+        cursor = { x, y }
+        if (gap.open) gap.open.end = { x, y }
+      }
+    }
+  }
+  for (const match of data.matchAll(pattern)) {
+    const piece = match[0] ?? ''
+    if (/[a-zA-Z]/.test(piece)) {
+      flush()
+      relative = piece === piece.toLowerCase()
+      command = piece.toUpperCase()
+      if (command === 'Z') {
+        if (gap.open) {
+          gap.open.closed = true
+          gap.open.end = { ...gap.open.start }
+          subs.push(gap.open)
+          gap.open = null
+        }
+        cursor = { ...start }
+        command = ''
+      }
+      continue
+    }
+    numbers.push(Number(piece))
+  }
+  flush()
+  if (gap.open) subs.push(gap.open)
+  return subs
+}
+
+function microLoops(points: { x: number; y: number }[], touch: number, limit: number): number {
+  let loops = 0
+  for (let start = 0; start < points.length; start += 1) {
+    let arc = 0
+    for (let index = start + 4; index < points.length; index += 1) {
+      const previous = points[index - 1]
+      const point = points[index]
+      const origin = points[start]
+      if (!previous || !point || !origin) continue
+      arc += Math.hypot(point.x - previous.x, point.y - previous.y)
+      if (arc > limit) break
+      if (Math.hypot(point.x - origin.x, point.y - origin.y) <= touch) loops += 1
+    }
+  }
+  return loops
+}
+
 function strokeWidth(svg: string): number {
   const match = /stroke-width="([^"]+)"/.exec(svg)
   return Number(match?.[1] ?? '0')
 }
 
-function curveCount(svg: string): number {
-  const data = paths(svg).join(' ')
+function curveCount(svgOrPath: string): number {
+  const data = svgOrPath.includes('d="') ? paths(svgOrPath).join(' ') : svgOrPath
   const commands = data.match(/[a-zA-Z]/g) ?? []
   return commands.filter((command) => command === 'C' || command === 'c' || command === 'Q' || command === 'q').length
 }

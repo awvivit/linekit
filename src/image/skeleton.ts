@@ -1,4 +1,4 @@
-import type { BinaryImage } from './limits.ts'
+import { CleanupTimeoutError, type BinaryImage } from './limits.ts'
 
 /**
  * Euclidean distance transform.
@@ -46,7 +46,7 @@ export function distanceToSeeds(
  * Patterns." Communications of the ACM 27(3), 1984.
  * Original implementation of the published method.
  */
-export function zhangSuenThin(image: BinaryImage): Uint8Array {
+export function zhangSuenThin(image: BinaryImage, deadline = Number.POSITIVE_INFINITY): Uint8Array {
   const { width, height } = image
   const ink = image.ink.slice()
   const removable = new Uint8Array(ink.length)
@@ -56,6 +56,7 @@ export function zhangSuenThin(image: BinaryImage): Uint8Array {
   }
   const limit = Math.max(width, height)
   for (let iteration = 0; iteration < limit; iteration += 1) {
+    if (Date.now() > deadline) throw new CleanupTimeoutError()
     let changed = false
     changed = markZhangSuen(ink, removable, active, width, height, true) || changed
     active = applyRemovals(ink, removable, active)

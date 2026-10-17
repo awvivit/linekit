@@ -36,6 +36,21 @@ export const EMPTY_MESSAGE = 'This file is empty.'
 
 export const DECODE_MESSAGE = "Couldn't open this photo. Try a JPEG or PNG."
 
+export const CLEANUP_TIMEOUT_MESSAGE =
+  'This drawing is taking too long to clean up. Showing the original trace instead.'
+
+export const NO_LINES_MESSAGE = 'No lines found. Try darker ink or a closer photo.'
+
+/** Stop a cleanup that is still running and show the original trace. */
+export const CLEANUP_BUDGET_MS = 8000
+
+export class CleanupTimeoutError extends Error {
+  constructor() {
+    super(CLEANUP_TIMEOUT_MESSAGE)
+    this.name = 'CleanupTimeoutError'
+  }
+}
+
 export type ImageKind = 'png' | 'jpeg' | 'webp' | 'heic'
 
 export type NormalizedCrop = {

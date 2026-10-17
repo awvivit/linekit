@@ -1,6 +1,6 @@
-import { DECODE_MESSAGE, ImageProcessError } from './limits.ts'
+import { CleanupTimeoutError, DECODE_MESSAGE, ImageProcessError } from './limits.ts'
 import type { WorkerRequest, WorkerResponse } from './messages.ts'
-import type { PreparedPhoto } from './process.ts'
+import type { CenterlineCache, PreparedPhoto } from './process.ts'
 
 type WorkerScope = {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null
@@ -9,6 +9,7 @@ type WorkerScope = {
 
 const scope = globalThis as unknown as WorkerScope
 let photo: PreparedPhoto | null = null
+const centerlineCache: CenterlineCache = { key: '', model: null }
 
 scope.onmessage = (event) => {
   const message = event.data
@@ -23,6 +24,8 @@ async function handle(message: WorkerRequest): Promise<void> {
   try {
     const pipeline = await tracing()
     if (message.kind === 'load') {
+      centerlineCache.key = ''
+      centerlineCache.model = null
       photo = await pipeline.preparePhoto(new Uint8Array(message.buffer))
       const preview = await pipeline.buildPreview(photo.raster)
       const bytes = new Uint8Array(preview.bytes)
@@ -42,9 +45,16 @@ async function handle(message: WorkerRequest): Promise<void> {
       scope.postMessage({ kind: 'failed', id: message.id, message: 'Choose a photo first.' })
       return
     }
-    const svg = pipeline.tracePrepared(photo, message.controls)
+    const svg = pipeline.tracePrepared(photo, message.controls, {
+      cache: centerlineCache,
+      deadline: message.controls.cleanup ? Date.now() + 7000 : Number.POSITIVE_INFINITY,
+    })
     scope.postMessage({ kind: 'traced', id: message.id, svg })
   } catch (error) {
+    if (error instanceof CleanupTimeoutError) {
+      scope.postMessage({ kind: 'timeout', id: message.id })
+      return
+    }
     const text = error instanceof ImageProcessError ? error.message : DECODE_MESSAGE
     scope.postMessage({ kind: 'failed', id: message.id, message: text })
   }

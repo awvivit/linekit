@@ -23,4 +23,5 @@ export type WorkerResponse =
       preview: ArrayBuffer
     }
   | { kind: 'traced'; id: number; svg: string }
+  | { kind: 'timeout'; id: number }
   | { kind: 'failed'; id: number; message: string }
