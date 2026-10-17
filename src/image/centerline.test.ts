@@ -77,6 +77,45 @@ describe('centerline cleanup', () => {
     expect(near(sampled.points, 17, 16, 12)).toBe(true)
   })
 
+  it('joins four square segments into one closed path with sharp corners', () => {
+    const image = blank(100, 100)
+    fill(image, 20, 20, 60, 6)
+    fill(image, 20, 74, 60, 6)
+    fill(image, 20, 20, 6, 60)
+    fill(image, 74, 20, 6, 60)
+    const svg = traceCenterline(image, 28)
+    expect(paths(svg)).toHaveLength(1)
+    const sampled = sample(paths(svg)[0] ?? '')
+    expect(sampled.closed).toBe(true)
+    expect(sampled.length).toBeGreaterThan(160)
+    expect(cornerCount(sampled.points, 50)).toBe(4)
+  })
+
+  it('keeps a crossing as two separate paths', () => {
+    const image = blank(80, 80)
+    fill(image, 12, 36, 56, 8)
+    fill(image, 36, 12, 8, 56)
+    const svg = traceCenterline(image, 28)
+    const data = paths(svg)
+    expect(data).toHaveLength(2)
+    for (const path of data) {
+      const sampled = sample(path)
+      expect(sampled.closed).toBe(false)
+      expect(sampled.length).toBeGreaterThan(40)
+    }
+  })
+
+  it('keeps a doubled tip as one open stroke', () => {
+    const image = blank(110, 48)
+    fill(image, 8, 16, 90, 6)
+    fill(image, 52, 26, 46, 6)
+    const svg = traceCenterline(image, 28)
+    expect(paths(svg)).toHaveLength(1)
+    const sampled = sample(paths(svg)[0] ?? '')
+    expect(sampled.closed).toBe(false)
+    expect(sampled.length).toBeGreaterThan(70)
+  })
+
   it('drops stray dots and keeps the stroke', () => {
     const image = blank(100, 40)
     fill(image, 10, 16, 70, 5)
@@ -326,6 +365,29 @@ function cubic(
     x: u ** 3 * start.x + 3 * u ** 2 * t * control1.x + 3 * u * t ** 2 * control2.x + t ** 3 * end.x,
     y: u ** 3 * start.y + 3 * u ** 2 * t * control1.y + 3 * u * t ** 2 * control2.y + t ** 3 * end.y,
   }
+}
+
+function cornerCount(points: { x: number; y: number }[], minDegrees: number): number {
+  const unique = points.slice()
+  const first = unique[0]
+  const last = unique[unique.length - 1]
+  if (first && last && unique.length > 2 && Math.hypot(first.x - last.x, first.y - last.y) < 0.5) unique.pop()
+  const count = unique.length
+  if (count < 3) return 0
+  let corners = 0
+  for (let index = 0; index < count; index += 1) {
+    const point = unique[index]
+    const before = unique[(index - 1 + count) % count]
+    const after = unique[(index + 1) % count]
+    if (!point || !before || !after) continue
+    const incoming = normalize(point.x - before.x, point.y - before.y)
+    const outgoing = normalize(after.x - point.x, after.y - point.y)
+    if (!incoming || !outgoing) continue
+    const cosine = Math.min(1, Math.max(-1, incoming.x * outgoing.x + incoming.y * outgoing.y))
+    const turn = (Math.acos(cosine) * 180) / Math.PI
+    if (turn >= minDegrees) corners += 1
+  }
+  return corners
 }
 
 function sharpestTurn(points: { x: number; y: number }[], radius: number): number {

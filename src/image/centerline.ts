@@ -47,7 +47,11 @@ export function traceCenterline(image: BinaryImage, smoothing: number): string {
   }))
   chains = pruneShort(chains, minLength)
   chains = mergeParallel(chains, penWidth * 2.15)
-  chains = joinGaps(chains, Math.max(penWidth * 3.6, 14))
+  chains = bridgeCrossings(chains)
+  chains = chains.filter((chain) => chain.closed || polylineLength(chain.points) >= minLength)
+  const maxGap = Math.max(penWidth * 3.6, 14)
+  chains = dropFoldedSpurs(chains, penWidth, maxGap)
+  chains = joinGaps(chains, maxGap)
   chains = chains.filter((chain) => polylineLength(chain.points) >= Math.min(minLength, penWidth))
   return publishSvg(image.width, image.height, chains, penWidth, smoothing)
 }
@@ -687,20 +691,90 @@ function longestRun(hits: Array<{ point: Point; index: number } | null>): { star
 
 type Endpoint = { chain: number; atStart: boolean }
 
-function joinGaps(chains: Chain[], maxGap: number): Chain[] {
+const CROSSING_DOT = -Math.cos((48 * Math.PI) / 180)
+
+/**
+ * At a junction where three or more strokes meet, continue the pairs that pass
+ * straight through. A crossing stays two paths. A sharp corner is not collinear,
+ * so it is left for the end-to-end join.
+ */
+function bridgeCrossings(chains: Chain[]): Chain[] {
   let current = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
   for (let guard = 0; guard < chains.length + 2; guard += 1) {
-    const pair = closestEndpoints(current, maxGap)
+    const cluster = crossingCluster(current)
+    if (!cluster) break
+    const pair = collinearPair(current, cluster)
+    if (!pair) break
+    const left = current[pair.left.chain]
+    const right = current[pair.right.chain]
+    if (!left || !right || pair.left.chain === pair.right.chain) break
+    const joined = concatEndpoints(left, pair.left.atStart, right, pair.right.atStart, false)
+    const dropLeft = pair.left.chain
+    const dropRight = pair.right.chain
+    current = current.filter((_, index) => index !== dropLeft && index !== dropRight)
+    current.push(joined)
+  }
+  return current
+}
+
+function crossingCluster(chains: Chain[]): Endpoint[] | null {
+  const ends = openEnds(chains)
+  for (let index = 0; index < ends.length; index += 1) {
+    const origin = ends[index]
+    if (!origin) continue
+    const originPoint = endpointOf(chains, origin)
+    if (!originPoint) continue
+    const cluster = ends.filter((end) => {
+      const point = endpointOf(chains, end)
+      return point !== null && distance(originPoint, point) <= 2.5
+    })
+    if (cluster.length >= 3 && collinearPair(chains, cluster)) return cluster
+  }
+  return null
+}
+
+function collinearPair(
+  chains: Chain[],
+  cluster: Endpoint[],
+): { left: Endpoint; right: Endpoint } | null {
+  let best: { left: Endpoint; right: Endpoint; score: number } | null = null
+  for (let left = 0; left < cluster.length; left += 1) {
+    for (let right = left + 1; right < cluster.length; right += 1) {
+      const a = cluster[left]
+      const b = cluster[right]
+      if (!a || !b || a.chain === b.chain) continue
+      const chainA = chains[a.chain]
+      const chainB = chains[b.chain]
+      if (!chainA || !chainB) continue
+      const tangentA = outwardTangent(chainA.points, a.atStart)
+      const tangentB = outwardTangent(chainB.points, b.atStart)
+      if (!tangentA || !tangentB) continue
+      const score = dot(tangentA, tangentB)
+      if (score > CROSSING_DOT) continue
+      if (!best || score < best.score) best = { left: a, right: b, score }
+    }
+  }
+  return best ? { left: best.left, right: best.right } : null
+}
+
+function joinGaps(chains: Chain[], maxGap: number): Chain[] {
+  let current = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
+  const blocked = new Set<string>()
+  for (let guard = 0; guard < chains.length * 2 + 2; guard += 1) {
+    const pair = closestEndpoints(current, maxGap, blocked)
     if (!pair) break
     const left = current[pair.left.chain]
     const right = current[pair.right.chain]
     if (!left || !right) break
     if (pair.left.chain === pair.right.chain) {
-      if (left.closed || polylineLength(left.points) < maxGap * 2) break
-      current[pair.left.chain] = { points: bridgeEnds(left.points), closed: true }
+      if (left.closed || polylineLength(left.points) < maxGap * 2) {
+        blocked.add(pairKey(pair.left, pair.right))
+        continue
+      }
+      current[pair.left.chain] = { points: bridgeEnds(left.points, maxGap), closed: true }
       continue
     }
-    const joined = concatEndpoints(left, pair.left.atStart, right, pair.right.atStart)
+    const joined = concatEndpoints(left, pair.left.atStart, right, pair.right.atStart, true, maxGap)
     const dropLeft = pair.left.chain
     const dropRight = pair.right.chain
     current = current.filter((_, index) => index !== dropLeft && index !== dropRight)
@@ -712,65 +786,223 @@ function joinGaps(chains: Chain[], maxGap: number): Chain[] {
 function closestEndpoints(
   chains: Chain[],
   maxGap: number,
+  blocked: Set<string>,
 ): { left: Endpoint; right: Endpoint; gap: number } | null {
+  const ends = openEnds(chains)
   let best: { left: Endpoint; right: Endpoint; gap: number } | null = null
-  const ends: Endpoint[] = []
-  chains.forEach((chain, index) => {
-    if (chain.closed || chain.points.length < 2) return
-    ends.push({ chain: index, atStart: true }, { chain: index, atStart: false })
-  })
   for (let left = 0; left < ends.length; left += 1) {
     for (let right = left + 1; right < ends.length; right += 1) {
       const a = ends[left]
       const b = ends[right]
-      if (!a || !b) continue
-      if (a.chain === b.chain && a.atStart === b.atStart) continue
-      const chainA = chains[a.chain]
-      const chainB = chains[b.chain]
-      if (!chainA || !chainB) continue
-      const pointA = endpointPoint(chainA, a.atStart)
-      const pointB = endpointPoint(chainB, b.atStart)
-      const gap = distance(pointA, pointB)
-      if (gap > maxGap) continue
-      if (gap < 0.75 && a.chain !== b.chain) continue
-      if (a.chain === b.chain && polylineLength(chainA.points) < maxGap * 2) continue
-      const toward = gap < maxGap * 0.45 || (faces(chainA, a.atStart, pointB) && faces(chainB, b.atStart, pointA))
-      if (!toward) continue
+      if (!a || !b || (a.chain === b.chain && a.atStart === b.atStart)) continue
+      if (blocked.has(pairKey(a, b))) continue
+      const gap = endpointGap(chains, a, b, maxGap)
+      if (gap === null || !meetsEndToEnd(chains, a, b, maxGap)) continue
+      if (crossingLeftover(chains, ends, a, b)) continue
       if (!best || gap < best.gap) best = { left: a, right: b, gap }
     }
   }
   return best
 }
 
-function bridgeEnds(points: Point[]): Point[] {
+/** Ends that still sit in a collinear junction belong to two crossing strokes. */
+function crossingLeftover(chains: Chain[], ends: Endpoint[], a: Endpoint, b: Endpoint): boolean {
+  const pointA = endpointOf(chains, a)
+  const pointB = endpointOf(chains, b)
+  if (!pointA || !pointB || distance(pointA, pointB) > 2.5) return false
+  const cluster = ends.filter((end) => {
+    const point = endpointOf(chains, end)
+    return point !== null && distance(pointA, point) <= 2.5
+  })
+  return cluster.length >= 3 && collinearPair(chains, cluster) !== null
+}
+
+function openEnds(chains: Chain[]): Endpoint[] {
+  const ends: Endpoint[] = []
+  chains.forEach((chain, index) => {
+    if (chain.closed || chain.points.length < 2) return
+    ends.push({ chain: index, atStart: true }, { chain: index, atStart: false })
+  })
+  return ends
+}
+
+function endpointGap(chains: Chain[], a: Endpoint, b: Endpoint, maxGap: number): number | null {
+  const chainA = chains[a.chain]
+  const chainB = chains[b.chain]
+  if (!chainA || !chainB) return null
+  const pointA = endpointPoint(chainA, a.atStart)
+  const pointB = endpointPoint(chainB, b.atStart)
+  const gap = distance(pointA, pointB)
+  if (gap > maxGap) return null
+  if (a.chain === b.chain && polylineLength(chainA.points) < maxGap * 2) return null
+  return gap
+}
+
+/**
+ * A short chain that leaves its tip and comes back is a skeleton hook, not a
+ * stroke. Real loops long enough to close are kept for the end-to-end join.
+ */
+function dropFoldedSpurs(chains: Chain[], penWidth: number, maxGap: number): Chain[] {
+  const chordLimit = Math.max(4, penWidth)
+  return chains.filter((chain) => {
+    if (chain.closed || chain.points.length < 2) return true
+    const chord = distance(at(chain.points, 0), at(chain.points, chain.points.length - 1))
+    const length = polylineLength(chain.points)
+    return !(chord <= chordLimit && length > chord * 3 && length < maxGap * 2)
+  })
+}
+
+const CORNER_PARALLEL = Math.cos((32 * Math.PI) / 180)
+
+/** Sharp corners meet end to end. A point back along the same stroke does not. */
+function meetsEndToEnd(chains: Chain[], a: Endpoint, b: Endpoint, maxGap: number): boolean {
+  const chainA = chains[a.chain]
+  const chainB = chains[b.chain]
+  if (!chainA || !chainB) return false
+  const pointA = endpointPoint(chainA, a.atStart)
+  const pointB = endpointPoint(chainB, b.atStart)
+  // Staggered skeleton ends at one corner sit a few pixels apart.
+  if (distance(pointA, pointB) < 6) return true
+  if (aimsToward(chainA, a.atStart, pointB) && aimsToward(chainB, b.atStart, pointA)) return true
+  return overshotCorner(chainA, a.atStart, chainB, b.atStart, maxGap)
+}
+
+/**
+ * Tips that ran past a corner, or stopped short of it, still meet when the two
+ * end tangents cross within the gap tolerance. Collinear runs are not corners.
+ */
+function overshotCorner(
+  chainA: Chain,
+  atStartA: boolean,
+  chainB: Chain,
+  atStartB: boolean,
+  maxGap: number,
+): boolean {
+  const pointA = endpointPoint(chainA, atStartA)
+  const pointB = endpointPoint(chainB, atStartB)
+  const tangentA = outwardTangent(chainA.points, atStartA)
+  const tangentB = outwardTangent(chainB.points, atStartB)
+  if (!tangentA || !tangentB) return false
+  // A short stub sitting on a longer stroke is a crossing leftover, not a corner.
+  if (polylineLength(chainA.points) < maxGap * 2 || polylineLength(chainB.points) < maxGap * 2) return false
+  return cornerHit(pointA, tangentA, pointB, tangentB, maxGap) !== null
+}
+
+/** Intersection of two end tangents when it falls within the gap of both tips. */
+function cornerHit(
+  originA: Point,
+  directionA: Point,
+  originB: Point,
+  directionB: Point,
+  limit: number,
+): Point | null {
+  if (Math.abs(dot(directionA, directionB)) > CORNER_PARALLEL) return null
+  const cross = directionA.x * directionB.y - directionA.y * directionB.x
+  if (Math.abs(cross) < 1e-3) return null
+  const dx = originB.x - originA.x
+  const dy = originB.y - originA.y
+  const t = (dx * directionB.y - dy * directionB.x) / cross
+  const hit = add(originA, scale(directionA, t))
+  if (distance(hit, originA) > limit || distance(hit, originB) > limit) return null
+  return hit
+}
+
+function aimsToward(chain: Chain, atStart: boolean, target: Point): boolean {
+  const origin = endpointPoint(chain, atStart)
+  const tangent = outwardTangent(chain.points, atStart)
+  const toward = unit(subtract(target, origin))
+  if (!tangent || !toward) return true
+  return dot(tangent, toward) > -0.35
+}
+
+function endpointOf(chains: Chain[], end: Endpoint): Point | null {
+  const chain = chains[end.chain]
+  if (!chain) return null
+  return endpointPoint(chain, end.atStart)
+}
+
+function endpointId(end: Endpoint): string {
+  return `${end.chain}:${end.atStart ? 's' : 'e'}`
+}
+
+function pairKey(a: Endpoint, b: Endpoint): string {
+  const left = endpointId(a)
+  const right = endpointId(b)
+  return left < right ? `${left}|${right}` : `${right}|${left}`
+}
+
+function bridgeEnds(points: Point[], maxGap: number): Point[] {
   const start = at(points, 0)
   const end = at(points, points.length - 1)
   const outwardStart = outwardTangent(points, true)
   const outwardEnd = outwardTangent(points, false)
-  const corner =
-    outwardStart && outwardEnd ? rayHit(start, outwardStart, end, outwardEnd, distance(start, end) * 2) : null
-  if (corner) return dedupe([...points, corner])
-  return points
+  if (!outwardStart || !outwardEnd) return points
+  const ahead = rayHit(start, outwardStart, end, outwardEnd, distance(start, end) * 2)
+  if (ahead) return dedupe([...points, ahead])
+  const corner = cornerHit(start, outwardStart, end, outwardEnd, maxGap)
+  if (!corner) return points
+  const startCut = cornerBehind(start, outwardStart, corner) ? overshootIndex(points, true, corner, maxGap) : 0
+  const endCut = cornerBehind(end, outwardEnd, corner)
+    ? overshootIndex(points, false, corner, maxGap)
+    : points.length - 1
+  if (endCut - startCut < 2) return points
+  return dedupe([corner, ...points.slice(startCut, endCut + 1)])
 }
 
-function concatEndpoints(left: Chain, leftStart: boolean, right: Chain, rightStart: boolean): Chain {
+function concatEndpoints(
+  left: Chain,
+  leftStart: boolean,
+  right: Chain,
+  rightStart: boolean,
+  cornerJoin = true,
+  maxGap = 0,
+): Chain {
   const a = leftStart ? [...left.points].reverse() : left.points.slice()
   const b = rightStart ? right.points.slice() : [...right.points].reverse()
   const end = at(a, a.length - 1)
   const start = at(b, 0)
   const tangentA = outwardTangent(a, false)
   const tangentB = outwardTangent(b, true)
-  const corner = tangentA && tangentB ? rayHit(end, tangentA, start, tangentB, distance(end, start) * 2) : null
-  const points = corner ? dedupe([...a, corner, ...b]) : dedupe([...a, ...b])
-  return { points, closed: false }
+  if (!cornerJoin || !tangentA || !tangentB) return { points: dedupe([...a, ...b]), closed: false }
+  const ahead = rayHit(end, tangentA, start, tangentB, distance(end, start) * 2)
+  if (ahead) return { points: dedupe([...a, ahead, ...b]), closed: false }
+  const corner = cornerHit(end, tangentA, start, tangentB, maxGap)
+  if (!corner) return { points: dedupe([...a, ...b]), closed: false }
+  const leftCut = cornerBehind(end, tangentA, corner) ? overshootIndex(a, false, corner, maxGap) : a.length - 1
+  const rightCut = cornerBehind(start, tangentB, corner) ? overshootIndex(b, true, corner, maxGap) : 0
+  return { points: dedupe([...a.slice(0, leftCut + 1), corner, ...b.slice(rightCut)]), closed: false }
 }
 
-function faces(chain: Chain, atStart: boolean, target: Point): boolean {
-  const origin = endpointPoint(chain, atStart)
-  const tangent = outwardTangent(chain.points, atStart)
-  const toward = unit(subtract(target, origin))
-  if (!tangent || !toward) return true
-  return dot(tangent, toward) > 0.05
+function cornerBehind(origin: Point, outward: Point, corner: Point): boolean {
+  return dot(subtract(corner, origin), outward) < -0.75
+}
+
+/** Index of the last point to keep before a tip that ran past `corner`. */
+function overshootIndex(points: Point[], atStart: boolean, corner: Point, limit: number): number {
+  if (atStart) {
+    let index = 0
+    let arc = 0
+    while (index < points.length - 2) {
+      const tip = at(points, index)
+      const next = at(points, index + 1)
+      arc += distance(tip, next)
+      if (arc > limit) break
+      if (distance(next, corner) + 0.75 >= distance(tip, corner)) break
+      index += 1
+    }
+    return index
+  }
+  let index = points.length - 1
+  let arc = 0
+  while (index > 1) {
+    const tip = at(points, index)
+    const previous = at(points, index - 1)
+    arc += distance(tip, previous)
+    if (arc > limit) break
+    if (distance(previous, corner) + 0.75 >= distance(tip, corner)) break
+    index -= 1
+  }
+  return index
 }
 
 function endpointPoint(chain: Chain, atStart: boolean): Point {

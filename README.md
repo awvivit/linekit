@@ -6,7 +6,7 @@ Linekit turns a photo of line art (PNG, JPEG, WebP, or HEIC) into clean SVG, ent
 
 **Privacy.** Linekit traces images only in your browser.
 
-**Clean up lines** is on by default. Each pen stroke becomes one open stroke along the ink centerline: side-by-side passes within about a pen width merge, short spurs and stray dots drop, and gaps that nearly meet are joined. The smoothing slider is the fit tolerance. Turn the switch off to get the original filled outline trace. The original photo preview is a downscaled copy (about 2000px on the long edge). Tracing code loads when a photo is opened, so the first page script stays small.
+**Clean up lines** is on by default. Each pen stroke becomes one stroke along the ink centerline: side-by-side passes within about a pen width merge, short spurs and stray dots drop, and ends that meet — including sharp corners — join into one path. A run that returns to its start closes. Strokes that cross stay separate. The smoothing slider is the fit tolerance. Turn the switch off to get the original filled outline trace. The original photo preview is a downscaled copy (about 2000px on the long edge). Tracing code loads when a photo is opened, so the first page script stays small.
 
 The display name, package name, and Pages base path (`/linekit/`) live in [`src/brand.ts`](src/brand.ts). The npm package name is `linekit`.
 
