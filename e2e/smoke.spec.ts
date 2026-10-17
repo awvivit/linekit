@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { encodePng } from '../src/image/png.ts'
 
 const SECRET = 'LKSECRET_GPS_37.8199_-122.4783_vacation-gps-photo'
@@ -88,12 +88,24 @@ test('traces an uploaded drawing and downloads an SVG with no photo metadata', a
   await expect(page.getByRole('slider', { name: 'Line darkness' })).toBeVisible()
   await expect(page.getByRole('slider', { name: 'Smoothing' })).toBeVisible()
   await expect(page.getByRole('slider', { name: 'Remove specks' })).toBeVisible()
+  const cleanup = page.getByRole('checkbox', { name: 'Clean up lines' })
+  await expect(cleanup).toBeChecked()
   const preview = page.getByRole('img', { name: 'Traced line art' })
   await expect(preview).toBeVisible({ timeout: 20_000 })
   await expect(preview).toHaveAttribute('src', /^blob:/)
+  await expect.poll(() => svgText(page)).toContain('stroke-linecap="round"')
 
   await page.getByRole('slider', { name: 'Smoothing' }).fill('60')
   await expect(preview).toBeVisible()
+
+  const cleanedSrc = await preview.getAttribute('src')
+  await cleanup.uncheck()
+  await expect(cleanup).not.toBeChecked()
+  await expect.poll(async () => preview.getAttribute('src')).not.toBe(cleanedSrc)
+  await expect.poll(() => svgText(page)).not.toContain('stroke-linecap="round"')
+  await cleanup.check()
+  await expect(cleanup).toBeChecked()
+  await expect.poll(() => svgText(page)).toContain('stroke-linecap="round"')
 
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('link', { name: 'Download .svg' }).click()
@@ -123,6 +135,17 @@ test('traces an uploaded drawing and downloads an SVG with no photo metadata', a
   expect(consoleErrors).toEqual([])
   expect(foreignRequests).toEqual([])
 })
+
+async function svgText(page: Page): Promise<string> {
+  const link = page.getByRole('link', { name: 'Download .svg' })
+  if ((await link.count()) === 0) return ''
+  const downloadPromise = page.waitForEvent('download', { timeout: 5_000 })
+  await link.click()
+  const download = await downloadPromise
+  const svgPath = await download.path()
+  if (!svgPath) return ''
+  return readFileSync(svgPath, 'utf8')
+}
 
 async function writeSample(): Promise<string> {
   const width = 96

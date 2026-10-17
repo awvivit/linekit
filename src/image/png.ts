@@ -213,9 +213,12 @@ function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 async function deflate(data: Uint8Array): Promise<Uint8Array> {
   const stream = new CompressionStream('deflate')
   const writer = stream.writable.getWriter()
+  // Pull the compressed bytes while writing. Chromium deadlocks if write() is
+  // awaited first: the stream buffer fills and nothing is reading it yet.
+  const compressed = new Response(stream.readable).arrayBuffer()
   await writer.write(copyBytes(data))
   await writer.close()
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer())
+  return new Uint8Array(await compressed)
 }
 
 async function inflateLimited(data: Uint8Array, maxOut: number): Promise<Uint8Array> {
