@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { traceCenterline } from './centerline.ts'
+import { skeletonCenterlineLength, traceCenterline } from './centerline.ts'
 import { CLEANUP_TIMEOUT_MESSAGE, type BinaryImage } from './limits.ts'
 import { estimatePenWidth } from './skeleton.ts'
 import { vectorize } from './vectorize.ts'
@@ -192,6 +192,19 @@ describe('centerline cleanup', () => {
     expect(microLoops(sample(path).points, 2, 24)).toBe(0)
   })
 
+  it('keeps parallel lines 1.5 pen widths apart as two open paths', () => {
+    const image = blank(200, 80)
+    fill(image, 8, 8, 160, 6)
+    const gap = Math.round(estimatePenWidth(image) * 1.5)
+    fill(image, 8, 8 + 6 + gap, 160, 6)
+    const data = paths(traceCenterline(image, 28))
+    expect(data).toHaveLength(2)
+    for (const path of data) {
+      expect(path).not.toMatch(/[Zz]/)
+      expect(openEnds(path)).toHaveLength(2)
+    }
+  })
+
   it('keeps parallel lines two pen widths apart as two open paths', () => {
     const image = blank(200, 80)
     fill(image, 8, 8, 160, 6)
@@ -209,6 +222,51 @@ describe('centerline cleanup', () => {
     const image = blank(40, 20)
     fill(image, 4, 6, 30, 6)
     expect(() => traceCenterline(image, 28, Date.now() - 1)).toThrow(CLEANUP_TIMEOUT_MESSAGE)
+  })
+
+  it('keeps at least 95% of the skeleton centerline, and closes loops', () => {
+    const circle = ring(600, 300, 300, 250, 6)
+    const curve = sCurve()
+    const square = standaloneBox()
+    const branched = boxWithBranches()
+    const closedShapes = [circle, square, ring(120, 60, 60, 37, 6), fourSegmentSquare(), thickCornerSquare(), gappedSquare()]
+    for (const image of closedShapes) {
+      const data = paths(traceCenterline(image, 28))
+      expect(data).toHaveLength(1)
+      expect(data[0]).toMatch(/[Zz]/)
+      expect(openEnds(data[0] ?? '')).toHaveLength(0)
+      expectKeepsCenterline(image)
+    }
+    const curvePaths = paths(traceCenterline(curve, 28))
+    expect(curvePaths).toHaveLength(1)
+    expect(curvePaths[0]).not.toMatch(/[Zz]/)
+    expectKeepsCenterline(curve)
+    const branchPaths = paths(traceCenterline(branched, 28))
+    expect(branchPaths.length).toBeGreaterThan(1)
+    expectJointsMeet(branchPaths)
+    expectNoDoubledEdges(branchPaths)
+    expectKeepsCenterline(branched)
+    for (const image of existingSamples()) {
+      expectKeepsCenterline(image)
+    }
+  })
+
+  it('meets T junctions and crossings with no gap and no doubled edge', () => {
+    const tee = blank(120, 100)
+    fill(tee, 10, 36, 100, 6)
+    fill(tee, 57, 36, 6, 50)
+    const teePaths = paths(traceCenterline(tee, 28))
+    expect(teePaths).toHaveLength(2)
+    expectJointsMeet(teePaths)
+    expectNoDoubledEdges(teePaths)
+    const crossing = blank(80, 80)
+    fill(crossing, 12, 36, 56, 8)
+    fill(crossing, 36, 12, 8, 56)
+    const crossingPaths = paths(traceCenterline(crossing, 28))
+    expect(crossingPaths).toHaveLength(2)
+    expectNoDoubledEdges(crossingPaths)
+    const samples = crossingPaths.map((path) => sample(path))
+    expect(polylineSeparation(samples[0]?.points ?? [], samples[1]?.points ?? [])).toBeLessThan(0.05)
   })
 
   it('uses fewer curves than the filled outline of the same ink', () => {
@@ -273,6 +331,223 @@ function ring(size: number, cx: number, cy: number, radius: number, thickness: n
     }
   }
   return image
+}
+
+function standaloneBox(): BinaryImage {
+  const image = blank(140, 140)
+  fill(image, 20, 20, 100, 6)
+  fill(image, 20, 114, 100, 6)
+  fill(image, 20, 20, 6, 100)
+  fill(image, 114, 20, 6, 100)
+  return image
+}
+
+function boxWithBranches(): BinaryImage {
+  const image = standaloneBox()
+  fill(image, 67, 4, 6, 22)
+  fill(image, 120, 64, 16, 6)
+  return image
+}
+
+function fourSegmentSquare(): BinaryImage {
+  const image = blank(100, 100)
+  fill(image, 20, 20, 60, 6)
+  fill(image, 20, 74, 60, 6)
+  fill(image, 20, 20, 6, 60)
+  fill(image, 74, 20, 6, 60)
+  return image
+}
+
+function thickCornerSquare(): BinaryImage {
+  const image = blank(120, 120)
+  fill(image, 24, 24, 72, 8)
+  fill(image, 24, 88, 72, 8)
+  fill(image, 24, 24, 8, 72)
+  fill(image, 88, 24, 8, 72)
+  fill(image, 78, 78, 26, 26)
+  fill(image, 84, 20, 8, 76)
+  return image
+}
+
+function gappedSquare(): BinaryImage {
+  const image = blank(140, 140)
+  fill(image, 20, 20, 50, 6)
+  fill(image, 77, 20, 40, 6)
+  fill(image, 111, 34, 6, 76)
+  fill(image, 20, 104, 97, 6)
+  fill(image, 20, 20, 6, 90)
+  return image
+}
+
+function sCurve(): BinaryImage {
+  const radius = 160
+  const thickness = 6
+  const pad = 20
+  const width = pad + radius * 4 + pad
+  const height = pad + radius * 2 + pad
+  const image = blank(width, height)
+  const half = thickness / 2
+  const left = pad + radius
+  const right = pad + radius * 3
+  const cy = pad + radius
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const upper = y <= cy && Math.abs(Math.hypot(x - left, y - cy) - radius) <= half
+      const lower = y >= cy && Math.abs(Math.hypot(x - right, y - cy) - radius) <= half
+      if (upper || lower) image.ink[y * width + x] = 1
+    }
+  }
+  return image
+}
+
+function existingSamples(): BinaryImage[] {
+  const doubled = blank(100, 48)
+  fill(doubled, 8, 16, 84, 6)
+  fill(doubled, 8, 26, 84, 6)
+  const corner = blank(90, 90)
+  drawCorner(corner, 18, 18, 52, 5)
+  drawCorner(corner, 20, 16, 54, 5)
+  drawCorner(corner, 16, 21, 50, 6)
+  const openSquare = blank(84, 84)
+  drawOpenSquare(openSquare, 12, 12, 60, 6, 8)
+  const straight = blank(100, 36)
+  fill(straight, 8, 14, 84, 6)
+  const sharp = blank(90, 80)
+  fill(sharp, 14, 50, 62, 6)
+  fill(sharp, 14, 12, 6, 44)
+  const doubledTip = blank(110, 48)
+  fill(doubledTip, 8, 16, 90, 6)
+  fill(doubledTip, 52, 26, 46, 6)
+  const dots = blank(100, 40)
+  fill(dots, 10, 16, 70, 5)
+  fill(dots, 4, 4, 2, 2)
+  fill(dots, 88, 6, 3, 3)
+  fill(dots, 80, 30, 2, 2)
+  const parallel = blank(200, 80)
+  fill(parallel, 8, 8, 160, 6)
+  const gap = Math.round(estimatePenWidth(parallel) * 2)
+  fill(parallel, 8, 8 + 6 + gap, 160, 6)
+  const tee = blank(120, 100)
+  fill(tee, 10, 36, 100, 6)
+  fill(tee, 57, 36, 6, 50)
+  const crossing = blank(80, 80)
+  fill(crossing, 12, 36, 56, 8)
+  fill(crossing, 36, 12, 8, 56)
+  return [
+    doubled,
+    corner,
+    openSquare,
+    straight,
+    sharp,
+    fourSegmentSquare(),
+    crossing,
+    thickCornerSquare(),
+    doubledTip,
+    dots,
+    gappedSquare(),
+    tee,
+    ring(120, 60, 60, 37, 6),
+    parallel,
+    arc(110, 70, 54, 36, 28, 6, Math.PI * 0.15, Math.PI * 0.85),
+  ]
+}
+
+function expectKeepsCenterline(image: BinaryImage): void {
+  const baseline = skeletonCenterlineLength(image)
+  expect(baseline).toBeGreaterThan(20)
+  const length = paths(traceCenterline(image, 28)).reduce((sum, path) => sum + sample(path).length, 0)
+  expect(length).toBeGreaterThanOrEqual(baseline * 0.95)
+}
+
+function expectJointsMeet(data: string[]): void {
+  const samples = data.map((path) => sample(path))
+  data.forEach((path, index) => {
+    for (const end of openEnds(path)) {
+      let nearest = Number.POSITIVE_INFINITY
+      samples.forEach((other, otherIndex) => {
+        if (otherIndex === index) return
+        nearest = Math.min(nearest, distanceToPolyline(end, other.points))
+      })
+      if (nearest <= 8) expect(nearest).toBeLessThan(0.05)
+    }
+  })
+}
+
+function expectNoDoubledEdges(data: string[]): void {
+  const samples = data.map((path) => sample(path))
+  for (let left = 0; left < samples.length; left += 1) {
+    const points = samples[left]?.points ?? []
+    for (let index = 1; index < points.length; index += 1) {
+      const start = points[index - 1]
+      const end = points[index]
+      if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 4) continue
+      const middle = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+      for (let right = 0; right < samples.length; right += 1) {
+        if (right === left) continue
+        const other = samples[right]?.points ?? []
+        const covered =
+          distanceToPolyline(start, other) < 1.25 &&
+          distanceToPolyline(end, other) < 1.25 &&
+          distanceToPolyline(middle, other) < 1.25
+        expect(covered).toBe(false)
+      }
+    }
+  }
+}
+
+function polylineSeparation(left: { x: number; y: number }[], right: { x: number; y: number }[]): number {
+  let nearest = Number.POSITIVE_INFINITY
+  for (let leftIndex = 1; leftIndex < left.length; leftIndex += 1) {
+    for (let rightIndex = 1; rightIndex < right.length; rightIndex += 1) {
+      const a = left[leftIndex - 1]
+      const b = left[leftIndex]
+      const c = right[rightIndex - 1]
+      const d = right[rightIndex]
+      if (!a || !b || !c || !d) continue
+      nearest = Math.min(nearest, segmentSeparation(a, b, c, d))
+    }
+  }
+  return nearest
+}
+
+function segmentSeparation(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+  d: { x: number; y: number },
+): number {
+  const cross = (b.x - a.x) * (d.y - c.y) - (b.y - a.y) * (d.x - c.x)
+  if (Math.abs(cross) > 1e-8) {
+    const t = ((c.x - a.x) * (d.y - c.y) - (c.y - a.y) * (d.x - c.x)) / cross
+    const u = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / cross
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return 0
+  }
+  return Math.min(
+    distanceToPolyline(a, [c, d]),
+    distanceToPolyline(b, [c, d]),
+    distanceToPolyline(c, [a, b]),
+    distanceToPolyline(d, [a, b]),
+  )
+}
+
+function distanceToPolyline(point: { x: number; y: number }, points: { x: number; y: number }[]): number {
+  let nearest = Number.POSITIVE_INFINITY
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]
+    const end = points[index]
+    if (!start || !end) continue
+    const span = Math.hypot(end.x - start.x, end.y - start.y)
+    if (span < 1e-6) {
+      nearest = Math.min(nearest, Math.hypot(point.x - start.x, point.y - start.y))
+      continue
+    }
+    const t = Math.min(
+      1,
+      Math.max(0, ((point.x - start.x) * (end.x - start.x) + (point.y - start.y) * (end.y - start.y)) / (span * span)),
+    )
+    nearest = Math.min(nearest, Math.hypot(point.x - (start.x + (end.x - start.x) * t), point.y - (start.y + (end.y - start.y) * t)))
+  }
+  return nearest
 }
 
 function arc(

@@ -48,30 +48,16 @@ export function traceCenterline(
 
 /** Skeleton, joins, and pruning. Smoothing is applied later by `renderCenterline`. */
 export function buildCenterline(image: BinaryImage, deadline = Number.POSITIVE_INFINITY): CenterlineModel {
-  ensureTime(deadline)
-  const penWidth = estimatePenWidth(image)
-  const radius = Math.max(1, Math.round(penWidth * 0.5))
-  const closed = closeInk(image, radius)
-  ensureTime(deadline)
-  let skeleton = zhangSuenThin(closed, deadline)
-  if (inkCount(skeleton) === 0) skeleton = zhangSuenThin(image, deadline)
-  clearBlocks(skeleton, image.width, image.height, deadline)
-  let chains = traceChains(skeleton, image.width, image.height)
-  // A thick corner is a blob of junction pixels. Its two stroke ends are a few
-  // pixels apart, and the pen stroke hides that break. Walk the blob so the
-  // path data stays one line.
-  chains = dissolveJunctionClusters(chains, penWidth)
+  const prepared = prepareChains(image, deadline)
+  const penWidth = prepared.penWidth
   const minLength = Math.max(8, penWidth * 2)
-  chains = pruneShort(chains, minLength)
-  chains = chains.map((chain) => ({
-    points: trimHooks(chain.points, minLength, penWidth),
-    closed: chain.closed,
-  }))
+  const maxGap = Math.max(penWidth * 3.6, 14)
+  let chains = fuseJunctionPixels(prepared.chains).map((chain) =>
+    chain.closed ? chain : { points: trimHooks(chain.points, minLength, penWidth), closed: false },
+  )
   chains = pruneShort(chains, minLength)
   // Centerlines of a doubled stroke sit about two radii apart, which is one pen of paper between the passes.
   chains = mergeParallel(chains, penWidth * 2, deadline)
-  chains = chains.filter((chain) => chain.closed || polylineLength(chain.points) >= minLength)
-  const maxGap = Math.max(penWidth * 3.6, 14)
   chains = dropFoldedSpurs(chains, penWidth, maxGap)
   chains = chains.map((chain) =>
     chain.closed ? chain : { points: trimHooks(chain.points, minLength, penWidth), closed: false },
@@ -82,8 +68,38 @@ export function buildCenterline(image: BinaryImage, deadline = Number.POSITIVE_I
   chains = mergeParallel(chains, penWidth * 2, deadline)
   chains = extendToHost(chains, CLOSE_GAP)
   chains = joinGaps(chains, maxGap, deadline)
-  chains = chains.filter((chain) => polylineLength(chain.points) >= Math.min(minLength, penWidth))
+  chains = pruneShort(chains, minLength)
   return { width: image.width, height: image.height, penWidth, chains }
+}
+
+/**
+ * Length of the pared skeleton after specks, dangling spurs, and a duplicate
+ * pass of a doubled stroke are gone. Later joins must not throw the rest away.
+ */
+export function skeletonCenterlineLength(image: BinaryImage, deadline = Number.POSITIVE_INFINITY): number {
+  const prepared = prepareChains(image, deadline)
+  const merged = mergeParallel(fuseJunctionPixels(prepared.chains), prepared.penWidth * 2, deadline)
+  // The same one-pixel simplify the fitter uses, so a staircase jog is not counted as lost ink.
+  return merged.reduce((sum, chain) => sum + chainLength({ points: simplify(chain.points, 1), closed: chain.closed }), 0)
+}
+
+function prepareChains(
+  image: BinaryImage,
+  deadline: number,
+): { penWidth: number; chains: Chain[] } {
+  ensureTime(deadline)
+  const penWidth = estimatePenWidth(image)
+  const radius = Math.max(1, Math.round(penWidth * 0.5))
+  const closed = closeInk(image, radius)
+  ensureTime(deadline)
+  let skeleton = zhangSuenThin(closed, deadline)
+  if (inkCount(skeleton) === 0) skeleton = zhangSuenThin(image, deadline)
+  clearBlocks(skeleton, image.width, image.height, deadline)
+  // A curved stroke thins to a staircase of extra pixels. Pare those pixels so
+  // the centerline stays one curve instead of a pile of short fragments.
+  pareSkeleton(skeleton, image.width, image.height, deadline)
+  const chains = pruneShort(traceChains(skeleton, image.width, image.height), Math.max(8, penWidth * 2))
+  return { penWidth, chains }
 }
 
 export function renderCenterline(model: CenterlineModel, smoothing: number): string {
@@ -103,13 +119,12 @@ function publishSvg(
 ): string {
   const tolerance = 0.45 + (clamp(smoothing, 0, 100) / 100) * 5.5
   const stroke = formatNumber(clamp(penWidth, 0.75, Math.max(width, height) / 2))
-  const paths = chains
-    .map((chain) => chainToPath(chain, tolerance, penWidth))
-    .filter((path): path is string => path.length > 0)
-    .map(
-      (data) =>
-        `<path fill="none" stroke="#000000" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" d="${data}"/>`,
-    )
+  const paths = seatPathData(
+    chains.map((chain) => chainToPath(chain, tolerance, penWidth)).filter((path) => path.length > 0),
+  ).map(
+    (data) =>
+      `<path fill="none" stroke="#000000" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" d="${data}"/>`,
+  )
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${paths.join('')}</svg>`
   const optimized = optimize(svg, {
     multipass: true,
@@ -134,6 +149,100 @@ function publishSvg(
     ],
   }).data
   return sanitizeSvg(optimized)
+}
+
+/** A fitted straight side can sit a pixel off the joint. Put the branch end on that side. */
+const SEAT_GAP = 2
+
+function seatPathData(paths: string[]): string[] {
+  const geometry = paths.map(pathGeometry)
+  return paths.map((data, index) => {
+    const shape = geometry[index]
+    if (!shape || shape.closed) return data
+    let next = data
+    for (const atStart of [true, false]) {
+      const point = atStart ? shape.start : shape.end
+      let best: Point | null = null
+      let bestGap = SEAT_GAP
+      for (let other = 0; other < geometry.length; other += 1) {
+        if (other === index) continue
+        for (const segment of geometry[other]?.segments ?? []) {
+          const projected = projectSegment(point, segment.start, segment.end)
+          const gap = distance(point, projected)
+          if (gap <= 0.05 || gap > bestGap) continue
+          bestGap = gap
+          best = projected
+        }
+      }
+      if (best) next = movePathEnd(next, atStart, best)
+    }
+    return next
+  })
+}
+
+function pathGeometry(data: string): { start: Point; end: Point; closed: boolean; segments: { start: Point; end: Point }[] } {
+  const pattern = /([MLCZ])|(-?\d*\.?\d+(?:e[-+]?\d+)?)/gi
+  let command = ''
+  const numbers: number[] = []
+  let cursor = { x: 0, y: 0 }
+  let start = { x: 0, y: 0 }
+  let closed = false
+  const segments: { start: Point; end: Point }[] = []
+  const addSegment = (end: Point) => {
+    segments.push({ start: cursor, end })
+    cursor = end
+  }
+  const flush = () => {
+    const arity = command === 'M' || command === 'L' ? 2 : command === 'C' ? 6 : 0
+    while (command && arity > 0 && numbers.length >= arity) {
+      const take = numbers.splice(0, arity)
+      if (command === 'M') {
+        cursor = { x: take[0] ?? 0, y: take[1] ?? 0 }
+        start = cursor
+        command = 'L'
+      } else if (command === 'L') {
+        addSegment({ x: take[0] ?? 0, y: take[1] ?? 0 })
+      } else if (command === 'C') {
+        const origin = cursor
+        const control1 = { x: take[0] ?? 0, y: take[1] ?? 0 }
+        const control2 = { x: take[2] ?? 0, y: take[3] ?? 0 }
+        const end = { x: take[4] ?? 0, y: take[5] ?? 0 }
+        for (let step = 1; step <= 8; step += 1) {
+          addSegment(bezier(origin, control1, control2, end, step / 8))
+        }
+      }
+    }
+  }
+  for (const match of data.matchAll(pattern)) {
+    const piece = match[0] ?? ''
+    if (/[a-zA-Z]/.test(piece)) {
+      flush()
+      command = piece.toUpperCase()
+      if (command === 'Z') {
+        if (distance(cursor, start) > 0.05) segments.push({ start: cursor, end: start })
+        cursor = start
+        closed = true
+        command = ''
+      }
+      continue
+    }
+    numbers.push(Number(piece))
+  }
+  flush()
+  return { start, end: cursor, closed, segments }
+}
+
+function movePathEnd(data: string, atStart: boolean, point: Point): string {
+  const text = `${formatNumber(point.x)} ${formatNumber(point.y)}`
+  if (atStart) return data.replace(/^M[-0-9.]+ [-0-9.]+/, `M${text}`)
+  return data.replace(/[-0-9.]+ [-0-9.]+$/, text)
+}
+
+function projectSegment(point: Point, start: Point, end: Point): Point {
+  const length = distance(start, end)
+  if (length < 1e-6) return start
+  const t = clamp(dot(subtract(point, start), subtract(end, start)) / (length * length), 0, 1)
+  return add(start, scale(subtract(end, start), t))
 }
 
 function chainToPath(chain: Chain, tolerance: number, penWidth: number): string {
@@ -498,41 +607,21 @@ function walk(
   return { points: closed ? points.slice(0, -1) : dedupe(points), closed }
 }
 
-/** Centers of 8-connected skeleton pixels are at most this far apart. */
-const NEIGHBOR_GAP = Math.SQRT2 + 0.05
+
+/** One skeleton step. Junction pixels this close are the same joint, not extra strokes. */
+const JUNCTION_STEP = Math.SQRT2 + 0.05
 
 /**
- * Join the two strokes that leave a thick corner or crossing blob.
- * Endpoints on neighboring pixels are one joint. A blob with two long arms
- * is a corner: the path follows the short pieces through it. Three or more
- * long arms stay separate so a T or a crossing can be paired later.
+ * A thick joint thins to a few neighboring pixels, and each pixel edge becomes
+ * its own chain. Those one-step chains are the joint itself. Drop them and
+ * park every arm on one shared point so a branch meets the stroke with no gap.
  */
-function dissolveJunctionClusters(chains: Chain[], penWidth: number): Chain[] {
-  let current = chains.map((chain) => ({ points: chain.points.slice(), closed: chain.closed }))
-  const blocked = new Set<string>()
-  const fillerLimit = Math.max(18, penWidth * 3)
-  const spurLimit = Math.max(8, penWidth * 2)
-  for (let guard = 0; guard < chains.length + 2; guard += 1) {
-    const cluster = twoArmCluster(current, fillerLimit, spurLimit, blocked)
-    if (!cluster) break
-    const joined = stitchCluster(current, cluster)
-    if (!joined) {
-      blocked.add(cluster.key)
-      continue
-    }
-    current = joined
-  }
-  return current
-}
-
-function twoArmCluster(
-  chains: Chain[],
-  fillerLimit: number,
-  spurLimit: number,
-  blocked: Set<string>,
-): { key: string; left: Endpoint; right: Endpoint; drop: number[] } | null {
-  const ends = openEnds(chains)
-  const parent = ends.map((_, index) => index)
+function fuseJunctionPixels(chains: Chain[]): Chain[] {
+  const links = chains.flatMap((chain, index) =>
+    !chain.closed && chain.points.length >= 2 && polylineLength(chain.points) <= JUNCTION_STEP ? [index] : [],
+  )
+  if (links.length === 0) return chains
+  const parent = links.map((_, index) => index)
   const find = (index: number): number => {
     let cursor = index
     while (parent[cursor] !== cursor) {
@@ -547,152 +636,62 @@ function twoArmCluster(
     const rootRight = find(right)
     if (rootLeft !== rootRight) parent[rootLeft] = rootRight
   }
-  const cell = NEIGHBOR_GAP
-  const grid = new Map<string, number[]>()
-  ends.forEach((end, index) => {
-    const point = endpointOf(chains, end)
-    if (!point) return
-    const key = `${Math.floor(point.x / cell)}:${Math.floor(point.y / cell)}`
-    const bucket = grid.get(key)
-    if (bucket) bucket.push(index)
-    else grid.set(key, [index])
-  })
-  for (let index = 0; index < ends.length; index += 1) {
-    const end = ends[index]
-    const point = end ? endpointOf(chains, end) : null
-    if (!end || !point) continue
-    const cellX = Math.floor(point.x / cell)
-    const cellY = Math.floor(point.y / cell)
-    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-      for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-        const bucket = grid.get(`${cellX + offsetX}:${cellY + offsetY}`)
-        if (!bucket) continue
-        for (const otherIndex of bucket) {
-          if (otherIndex <= index) continue
-          const other = ends[otherIndex]
-          const otherPoint = other ? endpointOf(chains, other) : null
-          if (!other || !otherPoint || distance(point, otherPoint) > NEIGHBOR_GAP) continue
-          if (end.chain === other.chain && polylineLength(chains[end.chain]?.points ?? []) > NEIGHBOR_GAP * 2) continue
-          unite(index, otherIndex)
-        }
-      }
+  for (let left = 0; left < links.length; left += 1) {
+    for (let right = left + 1; right < links.length; right += 1) {
+      const chainA = chains[links[left] ?? -1]
+      const chainB = chains[links[right] ?? -1]
+      if (!chainA || !chainB || !chainsWithin(chainA, chainB, JUNCTION_STEP)) continue
+      unite(left, right)
     }
   }
   const groups = new Map<number, number[]>()
-  for (let index = 0; index < ends.length; index += 1) {
+  links.forEach((chainIndex, index) => {
     const root = find(index)
     const group = groups.get(root)
-    if (group) group.push(index)
-    else groups.set(root, [index])
-  }
-  for (const indexes of groups.values()) {
-    if (indexes.length < 2) continue
-    const byChain = new Map<number, Endpoint[]>()
-    for (const index of indexes) {
-      const end = ends[index]
-      if (!end) continue
-      const group = byChain.get(end.chain)
-      if (group) group.push(end)
-      else byChain.set(end.chain, [end])
-    }
-    const external: Endpoint[] = []
-    const drop = new Set<number>()
-    for (const [chainIndex, chainEnds] of byChain) {
-      const chain = chains[chainIndex]
-      if (!chain) continue
-      const hasStart = chainEnds.some((end) => end.atStart)
-      const hasEnd = chainEnds.some((end) => !end.atStart)
-      const length = polylineLength(chain.points)
-      if (hasStart && hasEnd) {
-        if (length <= fillerLimit) drop.add(chainIndex)
-        continue
-      }
-      const end = chainEnds[0]
-      if (!end) continue
-      if (length < spurLimit) drop.add(chainIndex)
-      else external.push(end)
-    }
-    if (external.length !== 2) continue
-    const left = external[0]
-    const right = external[1]
-    if (!left || !right || left.chain === right.chain) continue
-    const chainA = chains[left.chain]
-    const chainB = chains[right.chain]
-    if (!chainA || !chainB) continue
-    const tangentA = outwardTangent(chainA.points, left.atStart)
-    const tangentB = outwardTangent(chainB.points, right.atStart)
-    if (tangentA && tangentB && dot(tangentA, tangentB) > 0.45) continue
-    const pointA = endpointPoint(chainA, left.atStart)
-    const pointB = endpointPoint(chainB, right.atStart)
-    const keyA = pointKey(pointA)
-    const keyB = pointKey(pointB)
-    const key = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`
-    if (blocked.has(key)) continue
-    drop.add(left.chain)
-    drop.add(right.chain)
-    return { key, left, right, drop: [...drop] }
-  }
-  return null
-}
-
-function stitchCluster(chains: Chain[], cluster: { left: Endpoint; right: Endpoint; drop: number[] }): Chain[] | null {
-  const chainA = chains[cluster.left.chain]
-  const chainB = chains[cluster.right.chain]
-  if (!chainA || !chainB) return null
-  const head = cluster.left.atStart ? [...chainA.points].reverse() : chainA.points.slice()
-  const tail = cluster.right.atStart ? chainB.points.slice() : [...chainB.points].reverse()
-  const fillers = cluster.drop.flatMap((index) => {
-    if (index === cluster.left.chain || index === cluster.right.chain) return []
-    const chain = chains[index]
-    return chain ? [chain] : []
+    if (group) group.push(chainIndex)
+    else groups.set(root, [chainIndex])
   })
-  const through = stitchFillers(at(head, head.length - 1), at(tail, 0), fillers)
-  if (!through && distance(at(head, head.length - 1), at(tail, 0)) > NEIGHBOR_GAP) return null
-  const points = dedupe([...head, ...(through ? through.slice(1) : []), ...tail])
-  if (points.length < 2) return null
-  const closed = points.length > 3 && distance(at(points, 0), at(points, points.length - 1)) <= NEIGHBOR_GAP
-  const drop = new Set(cluster.drop)
-  const next = chains.filter((_, index) => !drop.has(index))
-  next.push({ points: closed ? points.slice(0, -1) : points, closed })
-  return next
-}
-
-/** Walk short junction pieces from `start` to `target`, or null when they do not connect. */
-function stitchFillers(start: Point, target: Point, fillers: Chain[]): Point[] | null {
-  if (distance(start, target) <= NEIGHBOR_GAP) return [start]
-  const remaining = fillers.map((chain) => chain.points.slice())
-  const points = [start]
-  let cursor = start
-  for (let guard = 0; guard < fillers.length + 1; guard += 1) {
-    if (distance(cursor, target) <= NEIGHBOR_GAP) return points
-    let best = -1
-    let flip = false
-    let bestDistance = NEIGHBOR_GAP
-    for (let index = 0; index < remaining.length; index += 1) {
-      const piece = remaining[index]
-      if (!piece || piece.length === 0) continue
-      const toStart = distance(cursor, at(piece, 0))
-      const toEnd = distance(cursor, at(piece, piece.length - 1))
-      if (toStart <= bestDistance) {
-        bestDistance = toStart
-        best = index
-        flip = false
-      }
-      if (toEnd < bestDistance) {
-        bestDistance = toEnd
-        best = index
-        flip = true
+  const clusters: { points: Point[]; centroid: Point }[] = []
+  for (const indexes of groups.values()) {
+    const points: Point[] = []
+    for (const index of indexes) {
+      const chain = chains[index]
+      if (chain) points.push(...chain.points)
+    }
+    for (const chain of chains) {
+      if (chain.closed || chain.points.length < 2) continue
+      for (const end of [at(chain.points, 0), at(chain.points, chain.points.length - 1)]) {
+        if (points.some((point) => distance(point, end) <= JUNCTION_STEP)) points.push(end)
       }
     }
-    if (best < 0) return null
-    const piece = remaining[best]
-    if (!piece) return null
-    const sequence = flip ? [...piece].reverse() : piece
-    points.push(...sequence)
-    cursor = at(sequence, sequence.length - 1)
-    remaining.splice(best, 1)
+    clusters.push({ points, centroid: averagePoint(points) })
   }
-  return distance(cursor, target) <= NEIGHBOR_GAP ? points : null
+  const drop = new Set(links)
+  return chains.flatMap((chain, index) => {
+    if (drop.has(index)) return []
+    if (chain.closed || chain.points.length < 2) return [chain]
+    const points = chain.points.map((point, pointIndex) => {
+      if (pointIndex !== 0 && pointIndex !== chain.points.length - 1) return point
+      const cluster = clusters.find((candidate) => candidate.points.some((sample) => distance(sample, point) <= JUNCTION_STEP))
+      return cluster ? cluster.centroid : point
+    })
+    const closed = points.length > 3 && distance(at(points, 0), at(points, points.length - 1)) <= JUNCTION_STEP
+    return [{ points: dedupe(closed ? points.slice(0, -1) : points), closed }]
+  })
+}
+
+function chainsWithin(left: Chain, right: Chain, limit: number): boolean {
+  return left.points.some((point) => right.points.some((other) => distance(point, other) <= limit))
+}
+
+function averagePoint(points: Point[]): Point {
+  let x = 0
+  let y = 0
+  for (const point of points) {
+    x += point.x
+    y += point.y
+  }
+  return { x: x / points.length, y: y / points.length }
 }
 
 function pruneShort(chains: Chain[], minLength: number): Chain[] {
@@ -1137,7 +1136,14 @@ function joinGaps(chains: Chain[], maxGap: number, deadline = Number.POSITIVE_IN
         blocked.add(pairKey(pair.left, pair.right))
         continue
       }
-      current[pair.left.chain] = { points: bridgeEnds(left.points, maxGap), closed: true }
+      const endsMeet = distance(at(left.points, 0), at(left.points, left.points.length - 1)) <= JUNCTION_STEP
+      // The two ends are already the same joint. Close in place; cutting back would delete a branch.
+      const points = endsMeet ? left.points.slice(0, -1) : bridgeEnds(left.points, maxGap)
+      current[pair.left.chain] = { points, closed: true }
+      continue
+    }
+    if (sharedJoint(current, pair.left, pair.right)) {
+      blocked.add(pairKey(pair.left, pair.right))
       continue
     }
     const joined = concatEndpoints(left, pair.left.atStart, right, pair.right.atStart, true, maxGap)
@@ -1181,6 +1187,19 @@ function crossingLeftover(chains: Chain[], ends: Endpoint[], a: Endpoint, b: End
     return point !== null && distance(pointA, point) <= JUNCTION_RADIUS
   })
   return cluster.length >= 3 && collinearPair(chains, cluster) !== null
+}
+
+/** A third stroke already shares this joint. Joining the other two would swallow the branch. */
+function sharedJoint(chains: Chain[], a: Endpoint, b: Endpoint): boolean {
+  const pointA = endpointOf(chains, a)
+  const pointB = endpointOf(chains, b)
+  if (!pointA || !pointB || distance(pointA, pointB) > JUNCTION_STEP) return false
+  let count = 0
+  for (const end of openEnds(chains)) {
+    const point = endpointOf(chains, end)
+    if (point && distance(point, pointA) <= JUNCTION_STEP) count += 1
+  }
+  return count >= 3
 }
 
 function openEnds(chains: Chain[]): Endpoint[] {
@@ -1424,6 +1443,79 @@ function rayHit(originA: Point, directionA: Point, originB: Point, directionB: P
   return add(originA, scale(directionA, t))
 }
 
+/**
+ * Collapse a 2-pixel diagonal staircase to one curve.
+ * A pixel goes only when its neighbors already touch, so a sharp corner
+ * (degree 2) and a T or crossing (three or more arms) stay put.
+ */
+function pareSkeleton(skeleton: Uint8Array, width: number, height: number, deadline = Number.POSITIVE_INFINITY): void {
+  let changed = true
+  while (changed) {
+    ensureTime(deadline)
+    changed = false
+    for (let index = 0; index < skeleton.length; index += 1) {
+      if (skeleton[index] !== 1) continue
+      if (!redundantSkeletonPixel(skeleton, width, height, index)) continue
+      skeleton[index] = 0
+      changed = true
+    }
+  }
+}
+
+function redundantSkeletonPixel(skeleton: Uint8Array, width: number, height: number, index: number): boolean {
+  const neighbors = neighborIndexes(skeleton, width, height, index)
+  if (neighbors.length === 2) {
+    const left = neighbors[0]
+    const right = neighbors[1]
+    if (left === undefined || right === undefined || !indexesTouch(width, left, right)) return false
+    // A one-pixel bump between two busier pixels. A real corner's arms are not busier.
+    return (
+      neighborIndexes(skeleton, width, height, left).length >= 3 &&
+      neighborIndexes(skeleton, width, height, right).length >= 3
+    )
+  }
+  if (neighbors.length < 3 || ringTransitions(skeleton, width, height, index) >= 3) return false
+  const neighborSet = new Set(neighbors)
+  const start = neighbors[0]
+  if (start === undefined) return false
+  const seen = new Set<number>([start])
+  const stack = [start]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (current === undefined) break
+    for (const next of neighborIndexes(skeleton, width, height, current)) {
+      if (next === index || !neighborSet.has(next) || seen.has(next)) continue
+      seen.add(next)
+      stack.push(next)
+    }
+  }
+  return seen.size === neighbors.length
+}
+
+function ringTransitions(skeleton: Uint8Array, width: number, height: number, index: number): number {
+  const x = index % width
+  const y = (index - x) / width
+  const bits = NEIGHBORS.map((offset) => {
+    const nextX = x + (offset[0] ?? 0)
+    const nextY = y + (offset[1] ?? 0)
+    if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) return 0
+    return skeleton[nextY * width + nextX] === 1 ? 1 : 0
+  })
+  let transitions = 0
+  for (let cursor = 0; cursor < bits.length; cursor += 1) {
+    if (bits[cursor] === 1 && bits[(cursor + bits.length - 1) % bits.length] === 0) transitions += 1
+  }
+  return transitions
+}
+
+function indexesTouch(width: number, left: number, right: number): boolean {
+  const leftX = left % width
+  const leftY = (left - leftX) / width
+  const rightX = right % width
+  const rightY = (right - rightX) / width
+  return Math.max(Math.abs(leftX - rightX), Math.abs(leftY - rightY)) === 1
+}
+
 function clearBlocks(skeleton: Uint8Array, width: number, height: number, deadline = Number.POSITIVE_INFINITY): void {
   let changed = true
   while (changed) {
@@ -1537,6 +1629,12 @@ function polylineLength(points: Point[]): number {
     length += distance(at(points, index - 1), at(points, index))
   }
   return length
+}
+
+function chainLength(chain: Chain): number {
+  const length = polylineLength(chain.points)
+  if (!chain.closed || chain.points.length < 2) return length
+  return length + distance(at(chain.points, 0), at(chain.points, chain.points.length - 1))
 }
 
 function dedupe(points: Point[]): Point[] {

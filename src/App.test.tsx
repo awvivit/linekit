@@ -186,12 +186,22 @@ describe('App', () => {
     }
   })
 
-  it('cancels an in-flight trace before starting the next one', async () => {
+  it('terminates the worker that is tracing when a slider moves', async () => {
     const previousWorker = globalThis.Worker
-    const events: string[] = []
+    const workers: FakeWorker[] = []
+    let nextWorkerId = 1
     class FakeWorker extends EventTarget {
+      readonly id = nextWorkerId++
+      terminated = false
+      traces = 0
+
+      constructor(_url?: string | URL, _options?: WorkerOptions) {
+        super()
+        workers.push(this)
+      }
+
       postMessage(data: { kind: string; id: number }) {
-        events.push(data.kind)
+        if (data.kind === 'trace') this.traces += 1
         if (data.kind !== 'load') return
         this.dispatchEvent(
           new MessageEvent('message', {
@@ -201,7 +211,7 @@ describe('App', () => {
       }
 
       terminate() {
-        events.push('terminate')
+        this.terminated = true
       }
     }
     Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker })
@@ -212,16 +222,18 @@ describe('App', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(500)
       })
+      const inFlight = workers.filter((worker) => worker.traces > 0)
+      expect(inFlight).toHaveLength(1)
+      const first = inFlight[0]
+      expect(first?.terminated).toBe(false)
       fireEvent.change(screen.getByLabelText('Smoothing'), { target: { value: '70' } })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(500)
       })
-      const firstTrace = events.indexOf('trace')
-      const terminated = events.indexOf('terminate', firstTrace + 1)
-      const secondTrace = events.indexOf('trace', terminated + 1)
-      expect(firstTrace).toBeGreaterThanOrEqual(0)
-      expect(terminated).toBeGreaterThan(firstTrace)
-      expect(secondTrace).toBeGreaterThan(terminated)
+      expect(first?.terminated).toBe(true)
+      const stillTracing = workers.filter((worker) => worker.traces > 0 && !worker.terminated)
+      expect(stillTracing).toHaveLength(1)
+      expect(stillTracing[0]?.id).not.toBe(first?.id)
     } finally {
       vi.useRealTimers()
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
