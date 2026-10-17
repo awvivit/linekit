@@ -3,21 +3,26 @@ import { site } from './brand.ts'
 import CropFrame from './CropFrame.tsx'
 import { inspectImage } from './image/inspect.ts'
 import {
+  CLEANUP_BUDGET_MS,
+  CLEANUP_TIMEOUT_MESSAGE,
+  CleanupTimeoutError,
   DECODE_MESSAGE,
   DEFAULT_CONTROLS,
   EMPTY_MESSAGE,
   FULL_CROP,
+  NO_LINES_MESSAGE,
   TOO_LARGE_MESSAGE,
   exceedsByteCap,
   type NormalizedCrop,
 } from './image/limits.ts'
-import { createTraceSession, type TraceSession } from './image/session.ts'
+import { TraceCancelled, createTraceSession, type TraceSession } from './image/session.ts'
 
 export default function App() {
   const sessionRef = useRef<TraceSession | null>(null)
   const svgUrlRef = useRef<string | null>(null)
   const loadId = useRef(0)
   const traceId = useRef(0)
+  const timedOutRef = useRef(false)
   const [dragging, setDragging] = useState(false)
   const [busy, setBusy] = useState(false)
   const [tracing, setTracing] = useState(false)
@@ -30,19 +35,18 @@ export default function App() {
   const [darkness, setDarkness] = useState(DEFAULT_CONTROLS.darkness)
   const [smoothing, setSmoothing] = useState(DEFAULT_CONTROLS.smoothing)
   const [specks, setSpecks] = useState(DEFAULT_CONTROLS.specks)
+  const [cleanup, setCleanup] = useState(DEFAULT_CONTROLS.cleanup)
   const [crop, setCrop] = useState<NormalizedCrop>(FULL_CROP)
 
   useEffect(() => {
     document.title = site.name
-    const session = createTraceSession()
-    sessionRef.current = session
     const prevent = (event: DragEvent) => {
       if (event.dataTransfer?.types.includes('Files')) event.preventDefault()
     }
     window.addEventListener('dragover', prevent)
     window.addEventListener('drop', prevent)
     return () => {
-      session.dispose()
+      sessionRef.current?.dispose()
       sessionRef.current = null
       if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current)
       window.removeEventListener('dragover', prevent)
@@ -67,30 +71,57 @@ export default function App() {
   useEffect(() => {
     const session = sessionRef.current
     if (!originalUrl || !session) return
-    const controls = { darkness, smoothing, specks, crop }
+    const controls = { darkness, smoothing, specks, crop, cleanup }
+    let budgetTimer = 0
     const timer = window.setTimeout(() => {
       const id = ++traceId.current
       setTracing(true)
+      if (cleanup) {
+        budgetTimer = window.setTimeout(() => {
+          if (id !== traceId.current) return
+          session.cancel()
+          timedOutRef.current = true
+          setNotice(CLEANUP_TIMEOUT_MESSAGE)
+          setCleanup(false)
+          setTracing(false)
+        }, CLEANUP_BUDGET_MS)
+      }
       session
         .trace(controls)
         .then((next) => {
           if (id !== traceId.current) return
+          window.clearTimeout(budgetTimer)
           publishSvg(next)
+          if (!/<path\b/i.test(next)) setNotice(NO_LINES_MESSAGE)
+          else if (!timedOutRef.current) setNotice(null)
           setTracing(false)
         })
         .catch((reason: unknown) => {
           if (id !== traceId.current) return
+          window.clearTimeout(budgetTimer)
+          if (reason instanceof TraceCancelled) return
+          if (reason instanceof CleanupTimeoutError) {
+            timedOutRef.current = true
+            setNotice(CLEANUP_TIMEOUT_MESSAGE)
+            setCleanup(false)
+            setTracing(false)
+            return
+          }
           setError(reason instanceof Error ? reason.message : DECODE_MESSAGE)
           setTracing(false)
         })
-    }, 80)
-    return () => window.clearTimeout(timer)
-  }, [originalUrl, photoKey, darkness, smoothing, specks, crop])
+    }, 400)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(budgetTimer)
+    }
+  }, [originalUrl, photoKey, darkness, smoothing, specks, crop, cleanup])
 
   async function openFile(file: File) {
     const id = ++loadId.current
     setError(null)
     setNotice(null)
+    timedOutRef.current = false
     if (file.size === 0) {
       setError(EMPTY_MESSAGE)
       return
@@ -108,16 +139,15 @@ export default function App() {
         setError(inspection.message)
         return
       }
-      const session = sessionRef.current
-      if (!session) {
-        setError(DECODE_MESSAGE)
-        return
-      }
-      await session.load(buffer)
+      const session = sessionRef.current ?? createTraceSession()
+      sessionRef.current = session
+      const loaded = await session.load(buffer)
       if (id !== loadId.current) return
       publishSvg(null)
       setCrop(FULL_CROP)
-      setOriginalUrl(URL.createObjectURL(file))
+      const preview = new Uint8Array(loaded.preview.byteLength)
+      preview.set(loaded.preview)
+      setOriginalUrl(URL.createObjectURL(new Blob([preview], { type: 'image/png' })))
       setPhotoKey((value) => value + 1)
     } catch (reason) {
       if (id !== loadId.current) return
@@ -191,6 +221,18 @@ export default function App() {
 
       {originalUrl ? (
         <section className="workspace" aria-label="Trace">
+          <div className="switch-row">
+            <input
+              id="clean-up-lines"
+              type="checkbox"
+              checked={cleanup}
+              onChange={(event) => {
+                if (event.currentTarget.checked) timedOutRef.current = false
+                setCleanup(event.currentTarget.checked)
+              }}
+            />
+            <label htmlFor="clean-up-lines">Clean up lines</label>
+          </div>
           <div className="sliders">
             <Slider id="line-darkness" label="Line darkness" value={darkness} onChange={setDarkness} />
             <Slider id="smoothing" label="Smoothing" value={smoothing} onChange={setSmoothing} />

@@ -7,6 +7,7 @@ import {
   HEIC_MESSAGE,
   ImageProcessError,
   MAX_EDGE,
+  PREVIEW_EDGE,
   TOO_LARGE_MESSAGE,
   exceedsByteCap,
   isDecompressionBomb,
@@ -14,7 +15,9 @@ import {
   type Raster,
   type TraceControls,
 } from './limits.ts'
+import { encodePng } from './png.ts'
 import { applyOrientation, cleanDrawing, cropNormalized, downscaleRaster } from './raster.ts'
+import { buildCenterline, renderCenterline, type CenterlineModel } from './centerline.ts'
 import { vectorize } from './vectorize.ts'
 
 export type PreparedPhoto = {
@@ -65,8 +68,41 @@ export async function preparePhoto(
   return { raster: scaled, width: scaled.width, height: scaled.height }
 }
 
-export function tracePrepared(photo: PreparedPhoto, controls: TraceControls): string {
+export type CenterlineCache = {
+  key: string
+  model: CenterlineModel | null
+}
+
+export function tracePrepared(
+  photo: PreparedPhoto,
+  controls: TraceControls,
+  options?: { cache?: CenterlineCache; deadline?: number },
+): string {
   const cropped = cropNormalized(photo.raster, controls.crop)
   const binary = cleanDrawing(cropped, controls.darkness, controls.specks)
-  return vectorize(binary, controls.smoothing)
+  if (controls.cleanup === false) return vectorize(binary, controls.smoothing)
+  const key = [
+    controls.darkness,
+    controls.specks,
+    controls.crop.x,
+    controls.crop.y,
+    controls.crop.width,
+    controls.crop.height,
+  ].join('|')
+  const cached = options?.cache
+  if (cached && cached.key === key && cached.model) return renderCenterline(cached.model, controls.smoothing)
+  const model = buildCenterline(binary, options?.deadline ?? Number.POSITIVE_INFINITY)
+  if (cached) {
+    cached.key = key
+    cached.model = model
+  }
+  return renderCenterline(model, controls.smoothing)
+}
+
+export async function buildPreview(
+  raster: Raster,
+  maxEdge = PREVIEW_EDGE,
+): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+  const scaled = downscaleRaster(raster, maxEdge)
+  return { bytes: await encodePng(scaled), width: scaled.width, height: scaled.height }
 }
