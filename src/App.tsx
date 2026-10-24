@@ -307,7 +307,7 @@ export default function App() {
       <dl className="facts">
         <div>
           <dt>Input</dt>
-          <dd>PNG, JPEG, WebP, HEIC</dd>
+          <dd>PNG, JPEG, WebP (HEIC in some browsers)</dd>
         </div>
         <div>
           <dt>Output</dt>
