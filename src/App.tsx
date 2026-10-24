@@ -413,7 +413,7 @@ function Dropzone({ busy, onFile }: { busy: boolean; onFile: (file: File) => voi
   return (
     <section
       className={dragging ? 'dropzone dragging' : 'dropzone'}
-      aria-label="Upload"
+      aria-label="Open a photo"
       onDragEnter={(event: ReactDragEvent<HTMLElement>) => {
         event.preventDefault()
         setDragging(true)
@@ -443,7 +443,7 @@ function Dropzone({ busy, onFile }: { busy: boolean; onFile: (file: File) => voi
           }}
         />
         <span>{busy ? 'Opening photo…' : 'Choose a photo or drop it here'}</span>
-        <span className="hint">PNG, JPEG, WebP, or HEIC</span>
+        <span className="hint">PNG, JPEG or WebP. HEIC works in some browsers.</span>
       </label>
     </section>
   )
