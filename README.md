@@ -2,9 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Linekit turns a photo of line art (PNG, JPEG, WebP, or HEIC) into clean SVG, entirely in the browser. The site is a static Vite app and is published with GitHub Pages at [awvivit.github.io/linekit](https://awvivit.github.io/linekit/).
-
-**Privacy.** Linekit traces images only in your browser.
+> **Linekit**: Draw it. Snap it. Get clean SVG.
+> Take a photo of a drawing on paper, and Linekit turns it into clean SVG line art. It straightens sideways photos, clears out shadows and specks, and lets you tune the result with three sliders: Line darkness, Smoothing and Remove specks. Linekit traces images only in your browser. Nothing is uploaded. Works with PNG, JPEG and WebP, and with HEIC in browsers that can open it.
 
 **Clean up lines** is on by default. It traces each pen stroke as a single line through the middle of the ink. Passes drawn side by side merge into one, stray dots and short spurs are dropped, and ends that nearly meet are joined. A line that loops back to where it started becomes one closed shape. The Smoothing slider sets how closely curves follow the ink. Turn the switch off to get the original outline trace.
 

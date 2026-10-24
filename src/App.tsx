@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { site } from './brand.ts'
 import CropFrame from './CropFrame.tsx'
 import { inspectImage } from './image/inspect.ts'
@@ -17,13 +24,47 @@ import {
 } from './image/limits.ts'
 import { TraceCancelled, createTraceSession, type TraceSession } from './image/session.ts'
 
+/** Phones, and iPad split view narrower than 768px. Wider screens are side by side. */
+const COMPACT_QUERY = '(max-width: 767px)'
+
+const TRACE_TABS = [
+  { id: 'photo', label: 'Photo' },
+  { id: 'adjust', label: 'Adjust' },
+  { id: 'result', label: 'Result' },
+] as const
+
+type TraceTab = (typeof TRACE_TABS)[number]['id']
+
+function useCompact(): boolean {
+  const [compact, setCompact] = useState(() => {
+    if (typeof window.matchMedia !== 'function') return false
+    return window.matchMedia(COMPACT_QUERY).matches
+  })
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(COMPACT_QUERY)
+    const onChange = () => {
+      setCompact(media.matches)
+    }
+    onChange()
+    media.addEventListener('change', onChange)
+    return () => {
+      media.removeEventListener('change', onChange)
+    }
+  }, [])
+
+  return compact
+}
+
 export default function App() {
   const sessionRef = useRef<TraceSession | null>(null)
   const svgUrlRef = useRef<string | null>(null)
   const loadId = useRef(0)
   const traceId = useRef(0)
   const timedOutRef = useRef(false)
-  const [dragging, setDragging] = useState(false)
+  const compact = useCompact()
+  const [tab, setTab] = useState<TraceTab>('photo')
   const [busy, setBusy] = useState(false)
   const [tracing, setTracing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -149,6 +190,7 @@ export default function App() {
       preview.set(loaded.preview)
       setOriginalUrl(URL.createObjectURL(new Blob([preview], { type: 'image/png' })))
       setPhotoKey((value) => value + 1)
+      setTab('photo')
     } catch (reason) {
       if (id !== loadId.current) return
       publishSvg(null)
@@ -170,48 +212,13 @@ export default function App() {
   }
 
   return (
-    <main className="shell">
-      <p className="eyebrow">In the browser</p>
-      <h1>{site.name}</h1>
-      <p className="lede">Line art to clean SVG.</p>
-      <p className="detail">Photograph a drawing on paper. Linekit traces it on this device.</p>
-
-      <section
-        className={dragging ? 'dropzone dragging' : 'dropzone'}
-        aria-label="Upload"
-        onDragEnter={(event) => {
-          event.preventDefault()
-          setDragging(true)
-        }}
-        onDragOver={(event) => {
-          event.preventDefault()
-          setDragging(true)
-        }}
-        onDragLeave={(event) => {
-          event.preventDefault()
-          setDragging(false)
-        }}
-        onDrop={(event) => {
-          event.preventDefault()
-          setDragging(false)
-          const file = event.dataTransfer.files[0]
-          if (file) void openFile(file)
-        }}
-      >
-        <label className="picker">
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.png,.jpg,.jpeg,.webp,.heic,.heif"
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0]
-              event.currentTarget.value = ''
-              if (file) void openFile(file)
-            }}
-          />
-          <span>{busy ? 'Opening photo…' : 'Choose a photo or drop it here'}</span>
-          <span className="hint">PNG, JPEG, WebP, or HEIC</span>
-        </label>
-      </section>
+    <main className={originalUrl ? 'shell editing' : 'shell'}>
+      <header className="masthead">
+        <p className="eyebrow">In the browser</p>
+        <h1>{site.name}</h1>
+        <p className="lede">Line art to clean SVG.</p>
+        <p className="detail">Photograph a drawing on paper. Linekit traces it on this device.</p>
+      </header>
 
       {error ? (
         <p className="alert" role="alert">
@@ -221,62 +228,86 @@ export default function App() {
 
       {originalUrl ? (
         <section className="workspace" aria-label="Trace">
-          <div className="switch-row">
-            <input
-              id="clean-up-lines"
-              type="checkbox"
-              checked={cleanup}
-              onChange={(event) => {
-                if (event.currentTarget.checked) timedOutRef.current = false
-                setCleanup(event.currentTarget.checked)
-              }}
-            />
-            <label htmlFor="clean-up-lines">Clean up lines</label>
-          </div>
-          <div className="sliders">
-            <Slider id="line-darkness" label="Line darkness" value={darkness} onChange={setDarkness} />
-            <Slider id="smoothing" label="Smoothing" value={smoothing} onChange={setSmoothing} />
-            <Slider id="remove-specks" label="Remove specks" value={specks} onChange={setSpecks} />
-          </div>
-          <div className="crop-actions">
-            <button type="button" className="text-button" onClick={() => setCrop(FULL_CROP)}>
-              Reset crop
-            </button>
-          </div>
-          <div className="compare">
-            <figure>
-              <figcaption>Original</figcaption>
-              <CropFrame src={originalUrl} crop={crop} onCrop={setCrop} />
-            </figure>
-            <figure>
-              <figcaption>SVG</figcaption>
-              <div className="frame preview-frame">
-                {svgUrl ? <img src={svgUrl} alt="Traced line art" /> : <p className="hint">Tracing…</p>}
+          {compact ? <TraceTabs tab={tab} onSelect={setTab} /> : null}
+          <div className="panels">
+            <Panel id="photo" compact={compact} tab={tab}>
+              <Dropzone busy={busy} onFile={(file) => void openFile(file)} />
+              <figure>
+                <figcaption>Original</figcaption>
+                <div className="stage">
+                  <CropFrame src={originalUrl} crop={crop} onCrop={setCrop} />
+                </div>
+              </figure>
+              <div className="crop-actions">
+                <button type="button" className="text-button" onClick={() => setCrop(FULL_CROP)}>
+                  Reset crop
+                </button>
               </div>
-            </figure>
+            </Panel>
+            <Panel id="adjust" compact={compact} tab={tab}>
+              {compact ? (
+                <figure className="live-preview">
+                  <figcaption>Preview</figcaption>
+                  <div className="frame preview-frame">
+                    {svgUrl ? <img src={svgUrl} alt="Live preview" /> : <p className="hint">Tracing…</p>}
+                  </div>
+                </figure>
+              ) : null}
+              <div className="controls">
+                <div className="switch-row">
+                  <input
+                    id="clean-up-lines"
+                    type="checkbox"
+                    checked={cleanup}
+                    onChange={(event) => {
+                      if (event.currentTarget.checked) timedOutRef.current = false
+                      setCleanup(event.currentTarget.checked)
+                    }}
+                  />
+                  <label htmlFor="clean-up-lines">Clean up lines</label>
+                </div>
+                <div className="sliders">
+                  <Slider id="line-darkness" label="Line darkness" value={darkness} onChange={setDarkness} />
+                  <Slider id="smoothing" label="Smoothing" value={smoothing} onChange={setSmoothing} />
+                  <Slider id="remove-specks" label="Remove specks" value={specks} onChange={setSpecks} />
+                </div>
+              </div>
+            </Panel>
+            <Panel id="result" compact={compact} tab={tab}>
+              <figure>
+                <figcaption>SVG</figcaption>
+                <div className="stage">
+                  <div className="frame preview-frame">
+                    {svgUrl ? <img src={svgUrl} alt="Traced line art" /> : <p className="hint">Tracing…</p>}
+                  </div>
+                </div>
+              </figure>
+              <div className="actions">
+                {svgUrl ? (
+                  <a href={svgUrl} download="linekit.svg">
+                    Download .svg
+                  </a>
+                ) : (
+                  <span className="action-pending">Download .svg</span>
+                )}
+                <button type="button" onClick={() => void copySvg()} disabled={!svg}>
+                  Copy SVG code
+                </button>
+                <p className="status" role="status">
+                  {tracing ? 'Tracing…' : notice}
+                </p>
+              </div>
+            </Panel>
           </div>
-          <div className="actions">
-            {svgUrl ? (
-              <a href={svgUrl} download="linekit.svg">
-                Download .svg
-              </a>
-            ) : (
-              <span className="action-pending">Download .svg</span>
-            )}
-            <button type="button" onClick={() => void copySvg()} disabled={!svg}>
-              Copy SVG code
-            </button>
-          </div>
-          <p className="status" role="status">
-            {tracing ? 'Tracing…' : notice}
-          </p>
         </section>
-      ) : null}
+      ) : (
+        <Dropzone busy={busy} onFile={(file) => void openFile(file)} />
+      )}
 
       <dl className="facts">
         <div>
           <dt>Input</dt>
-          <dd>PNG, JPEG, WebP, HEIC</dd>
+          <dd>PNG, JPEG, WebP (HEIC in some browsers)</dd>
         </div>
         <div>
           <dt>Output</dt>
@@ -296,6 +327,125 @@ export default function App() {
         <p>MIT License · Copyright 2026 Apolinario Vivit</p>
       </footer>
     </main>
+  )
+}
+
+function Panel({
+  id,
+  compact,
+  tab,
+  children,
+}: {
+  id: TraceTab
+  compact: boolean
+  tab: TraceTab
+  children: ReactNode
+}) {
+  return (
+    <div
+      id={`panel-${id}`}
+      className={`panel panel-${id}`}
+      role={compact ? 'tabpanel' : undefined}
+      aria-labelledby={compact ? `tab-${id}` : undefined}
+      hidden={compact ? tab !== id : undefined}
+    >
+      {children}
+    </div>
+  )
+}
+
+function TraceTabs({ tab, onSelect }: { tab: TraceTab; onSelect: (tab: TraceTab) => void }) {
+  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    const targetId = event.target instanceof HTMLElement ? event.target.id : ''
+    const focused = TRACE_TABS.findIndex((item) => `tab-${item.id}` === targetId)
+    const index = focused >= 0 ? focused : TRACE_TABS.findIndex((item) => item.id === tab)
+    if (index < 0) return
+    let next = index
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % TRACE_TABS.length
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      next = (index - 1 + TRACE_TABS.length) % TRACE_TABS.length
+    } else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = TRACE_TABS.length - 1
+    else return
+    event.preventDefault()
+    const item = TRACE_TABS[next]
+    if (!item) return
+    onSelect(item.id)
+    document.getElementById(`tab-${item.id}`)?.focus()
+  }
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Trace"
+      aria-orientation="horizontal"
+      className="tabbar"
+      onKeyDown={onKeyDown}
+    >
+      {TRACE_TABS.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          id={`tab-${item.id}`}
+          aria-selected={tab === item.id}
+          aria-controls={`panel-${item.id}`}
+          tabIndex={tab === item.id ? 0 : -1}
+          onClick={() => {
+            onSelect(item.id)
+          }}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Dropzone({ busy, onFile }: { busy: boolean; onFile: (file: File) => void }) {
+  const [dragging, setDragging] = useState(false)
+
+  function takeFile(file: File | undefined) {
+    if (file) onFile(file)
+  }
+
+  return (
+    <section
+      className={dragging ? 'dropzone dragging' : 'dropzone'}
+      aria-label="Open a photo"
+      onDragEnter={(event: ReactDragEvent<HTMLElement>) => {
+        event.preventDefault()
+        setDragging(true)
+      }}
+      onDragOver={(event: ReactDragEvent<HTMLElement>) => {
+        event.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={(event: ReactDragEvent<HTMLElement>) => {
+        event.preventDefault()
+        setDragging(false)
+      }}
+      onDrop={(event: ReactDragEvent<HTMLElement>) => {
+        event.preventDefault()
+        setDragging(false)
+        takeFile(event.dataTransfer.files[0])
+      }}
+    >
+      <label className="picker">
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.png,.jpg,.jpeg,.webp,.heic,.heif"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ''
+            takeFile(file)
+          }}
+        />
+        <span>{busy ? 'Opening photo…' : 'Choose a photo or drop it here'}</span>
+        <span className="hint">PNG, JPEG or WebP. HEIC works in some browsers.</span>
+      </label>
+    </section>
   )
 }
 
@@ -319,7 +469,9 @@ function Slider({
         min={0}
         max={100}
         value={value}
-        onChange={(event) => onChange(Number(event.currentTarget.value))}
+        onChange={(event) => {
+          onChange(Number(event.currentTarget.value))
+        }}
       />
       <span aria-hidden="true">{value}</span>
     </div>
