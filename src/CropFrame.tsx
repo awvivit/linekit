@@ -1,12 +1,16 @@
 import { useRef } from 'react'
-import type { NormalizedCrop } from './image/limits.ts'
+import type { NormalizedCrop, PerspectiveQuad } from './image/limits.ts'
 
 type Point = { x: number; y: number }
 type Handle = 'nw' | 'ne' | 'sw' | 'se'
+type PerspectiveCorner = 'topLeft' | 'topRight' | 'bottomRight' | 'bottomLeft'
 type Drag =
   | { kind: 'draw'; origin: Point }
   | { kind: 'move'; origin: Point; start: NormalizedCrop }
   | { kind: 'resize'; handle: Handle; start: NormalizedCrop }
+  | { kind: 'perspective'; corner: PerspectiveCorner }
+
+const PERSPECTIVE_CORNERS: readonly PerspectiveCorner[] = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft']
 
 const HANDLE_SIZE = 0.045
 
@@ -14,10 +18,16 @@ export default function CropFrame({
   src,
   crop,
   onCrop,
+  perspective,
+  onPerspective,
+  onPerspectiveGesture,
 }: {
   src: string
   crop: NormalizedCrop
   onCrop: (crop: NormalizedCrop) => void
+  perspective: PerspectiveQuad | null
+  onPerspective: (quad: PerspectiveQuad) => void
+  onPerspectiveGesture: (phase: 'start' | 'end') => void
 }) {
   const drag = useRef<Drag | null>(null)
   const cropRef = useRef(crop)
@@ -37,6 +47,14 @@ export default function CropFrame({
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>) {
     event.currentTarget.setPointerCapture(event.pointerId)
     const point = locate(event)
+    if (perspective) {
+      const corner = hitPerspective(point, perspective)
+      if (corner) {
+        onPerspectiveGesture('start')
+        drag.current = { kind: 'perspective', corner }
+        return
+      }
+    }
     const handle = fullCrop(crop) ? null : hitHandle(point, crop)
     if (handle) {
       drag.current = { kind: 'resize', handle, start: crop }
@@ -54,27 +72,39 @@ export default function CropFrame({
     const current = drag.current
     if (!current) return
     const point = locate(event)
-    if (current.kind === 'draw') {
-      update(fromPoints(current.origin, point))
-      return
+    switch (current.kind) {
+      case 'draw':
+        update(fromPoints(current.origin, point))
+        return
+      case 'move': {
+        const dx = point.x - current.origin.x
+        const dy = point.y - current.origin.y
+        update({
+          x: clamp(current.start.x + dx, 0, 1 - current.start.width),
+          y: clamp(current.start.y + dy, 0, 1 - current.start.height),
+          width: current.start.width,
+          height: current.start.height,
+        })
+        return
+      }
+      case 'resize':
+        update(resize(current.start, current.handle, point))
+        return
+      case 'perspective':
+        if (!perspective) return
+        onPerspective({ ...perspective, [current.corner]: point })
+        return
+      default: {
+        const exhaustive: never = current
+        return exhaustive
+      }
     }
-    if (current.kind === 'move') {
-      const dx = point.x - current.origin.x
-      const dy = point.y - current.origin.y
-      update({
-        x: clamp(current.start.x + dx, 0, 1 - current.start.width),
-        y: clamp(current.start.y + dy, 0, 1 - current.start.height),
-        width: current.start.width,
-        height: current.start.height,
-      })
-      return
-    }
-    update(resize(current.start, current.handle, point))
   }
 
   function onPointerUp() {
     const current = drag.current
     drag.current = null
+    if (current?.kind === 'perspective') onPerspectiveGesture('end')
     const latest = cropRef.current
     if (current?.kind === 'draw' && (latest.width < 0.02 || latest.height < 0.02)) {
       update({ x: 0, y: 0, width: 1, height: 1 })
@@ -101,6 +131,21 @@ export default function CropFrame({
         <path className="crop-shade" fillRule="evenodd" d={shade} />
         <rect className="crop-box-outer" x={crop.x} y={crop.y} width={crop.width} height={crop.height} />
         <rect className="crop-box-inner" x={crop.x} y={crop.y} width={crop.width} height={crop.height} />
+        {perspective ? (
+          <polygon
+            className="perspective-quad"
+            points={PERSPECTIVE_CORNERS.map((corner) => {
+              const point = perspective[corner]
+              return `${point.x},${point.y}`
+            }).join(' ')}
+          />
+        ) : null}
+        {perspective
+          ? PERSPECTIVE_CORNERS.map((corner) => {
+              const point = perspective[corner]
+              return <circle key={corner} className="perspective-handle" cx={point.x} cy={point.y} r={0.028} />
+            })
+          : null}
         {fullCrop(crop)
           ? null
           : (['nw', 'ne', 'sw', 'se'] as const).map((handle) => {
@@ -140,6 +185,14 @@ function resize(start: NormalizedCrop, handle: Handle, point: Point): Normalized
   if (handle === 'nw' || handle === 'ne') top = clamp(point.y, 0, bottom - 0.02)
   if (handle === 'sw' || handle === 'se') bottom = clamp(point.y, top + 0.02, 1)
   return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
+function hitPerspective(point: Point, quad: PerspectiveQuad): PerspectiveCorner | null {
+  for (const corner of PERSPECTIVE_CORNERS) {
+    const at = quad[corner]
+    if (Math.abs(point.x - at.x) <= 0.06 && Math.abs(point.y - at.y) <= 0.06) return corner
+  }
+  return null
 }
 
 function hitHandle(point: Point, crop: NormalizedCrop): Handle | null {

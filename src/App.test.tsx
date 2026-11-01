@@ -186,6 +186,48 @@ describe('App', () => {
     }
   })
 
+  it('shows the editing controls and undoes a toggle', async () => {
+    const previousWorker = globalThis.Worker
+    class FakeWorker extends EventTarget {
+      postMessage(data: { kind: string; id: number }) {
+        if (data.kind !== 'load') return
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: { kind: 'loaded', id: data.id, width: 2, height: 2, preview: new ArrayBuffer(8) },
+          }),
+        )
+      }
+
+      terminate() {}
+    }
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker })
+    try {
+      render(<App />)
+      await openBlankPhoto()
+      expect(await screen.findByRole('checkbox', { name: 'Straighten shapes' })).toBeInTheDocument()
+      expect(screen.getByRole('checkbox', { name: 'Close gaps' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Eraser' })).toHaveAttribute('aria-pressed', 'false')
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+      expect(screen.getByRole('checkbox', { name: 'Fix perspective' })).toBeInTheDocument()
+      expect(screen.queryByRole('slider', { name: 'Smooth this line' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Straighten shapes' }))
+      expect(screen.getByRole('slider', { name: 'Tolerance' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).not.toBeChecked()
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeEnabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
+      fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).not.toBeChecked()
+      fireEvent.keyDown(window, { key: 'Z', ctrlKey: true, shiftKey: true })
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
+    } finally {
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
+    }
+  })
+
   it('terminates the worker that is tracing when a slider moves', async () => {
     const previousWorker = globalThis.Worker
     const workers: FakeWorker[] = []

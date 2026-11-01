@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BOMB_MESSAGE, DEFAULT_CONTROLS, HEIC_MESSAGE, PREVIEW_EDGE, type Raster } from './limits.ts'
+import { IMAGE_QUAD } from './perspective.ts'
 import { buildPreview, preparePhoto, tracePrepared } from './process.ts'
 import { cleanDrawing, cropNormalized } from './raster.ts'
 import { vectorize } from './vectorize.ts'
@@ -95,6 +96,13 @@ describe('traced SVG', () => {
     expect(cache.model).toBe(model)
     tracePrepared(photo, { ...DEFAULT_CONTROLS, darkness: 10 }, { cache })
     expect(cache.key).not.toBe(key)
+  })
+
+  it('leaves an identity perspective quad identical to no correction', () => {
+    const photo = { raster: drawing(), width: 48, height: 32 }
+    expect(tracePrepared(photo, { ...DEFAULT_CONTROLS, perspective: IMAGE_QUAD })).toBe(
+      tracePrepared(photo, DEFAULT_CONTROLS),
+    )
   })
 
   it('traces the cropped rectangle rather than the whole frame', async () => {

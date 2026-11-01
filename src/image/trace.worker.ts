@@ -45,11 +45,11 @@ async function handle(message: WorkerRequest): Promise<void> {
       scope.postMessage({ kind: 'failed', id: message.id, message: 'Choose a photo first.' })
       return
     }
-    const svg = pipeline.tracePrepared(photo, message.controls, {
+    const traced = pipeline.tracePreparedDocument(photo, message.controls, {
       cache: centerlineCache,
       deadline: message.controls.cleanup ? Date.now() + 7000 : Number.POSITIVE_INFINITY,
     })
-    scope.postMessage({ kind: 'traced', id: message.id, svg })
+    scope.postMessage({ kind: 'traced', id: message.id, svg: traced.svg, model: traced.model })
   } catch (error) {
     if (error instanceof CleanupTimeoutError) {
       scope.postMessage({ kind: 'timeout', id: message.id })
