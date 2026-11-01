@@ -2,7 +2,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.tsx'
 import { site } from './brand.ts'
-import { CLEANUP_BUDGET_MS, CLEANUP_TIMEOUT_MESSAGE, CROP_RESET_MESSAGE, NO_LINES_MESSAGE, REBUILD_CONFIRM_MESSAGE } from './image/limits.ts'
+import {
+  CLEANUP_BUDGET_MS,
+  CLEANUP_TIMEOUT_MESSAGE,
+  CROP_RESET_MESSAGE,
+  NO_LINES_LEFT_MESSAGE,
+  NO_LINES_LEFT_UNDO_MESSAGE,
+  NO_LINES_MESSAGE,
+  REBUILD_CONFIRM_MESSAGE,
+} from './image/limits.ts'
 import { encodePng } from './image/png.ts'
 
 describe('App', () => {
@@ -142,6 +150,7 @@ describe('App', () => {
       render(<App />)
       await openBlankPhoto()
       await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(NO_LINES_MESSAGE))
+      expect(screen.getByRole('status')).not.toHaveTextContent('No lines left')
     } finally {
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
     }
@@ -212,7 +221,12 @@ describe('App', () => {
       expect(screen.getByRole('checkbox', { name: 'Fix perspective' })).toBeInTheDocument()
       expect(screen.queryByRole('slider', { name: 'Smooth this line' })).not.toBeInTheDocument()
       fireEvent.click(screen.getByRole('checkbox', { name: 'Straighten shapes' }))
-      expect(screen.getByRole('slider', { name: 'Tolerance' })).toBeInTheDocument()
+      expect(screen.getByRole('slider', { name: 'Straighten tolerance' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Close gaps' }))
+      expect(screen.getByRole('slider', { name: 'Gap size' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      expect(screen.queryByRole('slider', { name: 'Gap size' })).not.toBeInTheDocument()
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled()
       fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
       expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).not.toBeChecked()
@@ -224,6 +238,30 @@ describe('App', () => {
       fireEvent.keyDown(window, { key: 'Z', ctrlKey: true, shiftKey: true })
       expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
     } finally {
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
+    }
+  })
+
+  it('says when edits remove every traced line', async () => {
+    const previousWorker = globalThis.Worker
+    const previousCapture = Element.prototype.setPointerCapture
+    Element.prototype.setPointerCapture = () => {}
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: lineWorker() })
+    try {
+      render(<App />)
+      await openBlankPhoto()
+      const traced = await screen.findByRole('img', { name: 'Traced line art' })
+      giveBox(traced, 100, 40)
+      expect(screen.getByRole('status')).not.toHaveTextContent('No lines')
+      fireEvent.click(screen.getByRole('button', { name: 'Eraser' }))
+      fireEvent.pointerDown(traced, { clientX: 50, clientY: 10, pointerId: 1 })
+      await waitFor(() => expect(screen.getByRole('status').textContent).toBe(NO_LINES_LEFT_MESSAGE))
+      fireEvent.pointerUp(traced)
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(NO_LINES_LEFT_UNDO_MESSAGE))
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      await waitFor(() => expect(screen.getByRole('status')).not.toHaveTextContent('No lines'))
+    } finally {
+      Element.prototype.setPointerCapture = previousCapture
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
     }
   })
@@ -387,21 +425,58 @@ function silentWorker() {
   }
 }
 
-function giveBox(element: Element) {
+function giveBox(element: Element, width = 100, height = 100) {
   element.getBoundingClientRect = () =>
     ({
       x: 0,
       y: 0,
       left: 0,
       top: 0,
-      right: 100,
-      bottom: 100,
-      width: 100,
-      height: 100,
+      right: width,
+      bottom: height,
+      width,
+      height,
       toJSON() {
         return {}
       },
     }) as DOMRect
+}
+
+function lineWorker() {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><path d="M40 10 L60 10"/></svg>'
+  const model = {
+    width: 100,
+    height: 40,
+    penWidth: 4,
+    kind: 'stroke' as const,
+    strokes: [
+      {
+        id: 1,
+        points: [
+          { x: 40, y: 10 },
+          { x: 60, y: 10 },
+        ],
+        closed: false,
+        smoothing: null,
+        source: null,
+      },
+    ],
+  }
+  return class FakeWorker extends EventTarget {
+    postMessage(data: { kind: string; id: number }) {
+      if (data.kind === 'load') {
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: { kind: 'loaded', id: data.id, width: 100, height: 40, preview: new ArrayBuffer(8) },
+          }),
+        )
+        return
+      }
+      this.dispatchEvent(new MessageEvent('message', { data: { kind: 'traced', id: data.id, svg, model } }))
+    }
+
+    terminate() {}
+  }
 }
 
 function drawCrop(crop: Element, x0: number, y0: number, x1: number, y1: number) {

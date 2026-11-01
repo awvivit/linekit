@@ -43,6 +43,8 @@ import {
   EMPTY_MESSAGE,
   FULL_CROP,
   CROP_RESET_MESSAGE,
+  NO_LINES_LEFT_MESSAGE,
+  NO_LINES_LEFT_UNDO_MESSAGE,
   NO_LINES_MESSAGE,
   REBUILD_CONFIRM_MESSAGE,
   TOO_LARGE_MESSAGE,
@@ -147,14 +149,20 @@ export default function App() {
 
   const edited = useMemo(() => (base && editsActive(edit) ? applyEdits(base, edit) : null), [base, edit])
   const displaySvg = editsActive(edit) ? (editedSvg ?? rawSvg) : rawSvg
+  const displayHasLines = Boolean(displaySvg && /<path\b/i.test(displaySvg))
+  const traceHadLines = Boolean(rawSvg && /<path\b/i.test(rawSvg))
   const statusText =
     notice === CROP_RESET_MESSAGE
       ? CROP_RESET_MESSAGE
       : tracing
         ? 'Tracing…'
-        : editsActive(edit) && displaySvg && !/<path\b/i.test(displaySvg)
-          ? NO_LINES_MESSAGE
-          : notice === NO_LINES_MESSAGE && displaySvg && /<path\b/i.test(displaySvg)
+        : editsActive(edit) && displaySvg && !displayHasLines
+          ? traceHadLines
+            ? canUndo(history)
+              ? NO_LINES_LEFT_UNDO_MESSAGE
+              : NO_LINES_LEFT_MESSAGE
+            : NO_LINES_MESSAGE
+          : notice === NO_LINES_MESSAGE && displayHasLines
             ? null
             : notice
   const liveStrokes = edited?.strokes ?? base?.strokes ?? []
@@ -655,7 +663,7 @@ export default function App() {
                   {edit.straighten ? (
                     <Slider
                       id="straighten-tolerance"
-                      label="Tolerance"
+                      label="Straighten tolerance"
                       value={edit.tolerance}
                       onChange={(value) => {
                         changeEdit({ tolerance: value })
@@ -667,7 +675,7 @@ export default function App() {
                   {edit.closeGaps ? (
                     <Slider
                       id="gap-distance"
-                      label="Gap"
+                      label="Gap size"
                       value={edit.gap}
                       onChange={(value) => {
                         changeEdit({ gap: value })

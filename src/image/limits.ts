@@ -41,6 +41,10 @@ export const CLEANUP_TIMEOUT_MESSAGE =
 
 export const NO_LINES_MESSAGE = 'No lines found. Try darker ink or a closer photo.'
 
+export const NO_LINES_LEFT_MESSAGE = 'No lines left.'
+
+export const NO_LINES_LEFT_UNDO_MESSAGE = 'No lines left. Use Undo to bring them back.'
+
 export const REBUILD_CONFIRM_MESSAGE =
   'This will clear your eraser marks, line smoothing and undo history. Continue?'
 
