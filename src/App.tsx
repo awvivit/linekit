@@ -42,7 +42,9 @@ import {
   DEFAULT_CONTROLS,
   EMPTY_MESSAGE,
   FULL_CROP,
+  CROP_RESET_MESSAGE,
   NO_LINES_MESSAGE,
+  REBUILD_CONFIRM_MESSAGE,
   TOO_LARGE_MESSAGE,
   exceedsByteCap,
   type NormalizedCrop,
@@ -60,6 +62,15 @@ const TRACE_TABS = [
 ] as const
 
 type TraceTab = (typeof TRACE_TABS)[number]['id']
+type RebuildLock = 'ask' | 'waiting' | 'allow' | 'block'
+
+function isFullCrop(crop: NormalizedCrop): boolean {
+  return crop.x <= 0.005 && crop.y <= 0.005 && crop.width >= 0.99 && crop.height >= 0.99
+}
+
+function isSliderKey(key: string): boolean {
+  return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' || key === 'Home' || key === 'End'
+}
 
 function useCompact(): boolean {
   const [compact, setCompact] = useState(() => {
@@ -108,9 +119,17 @@ export default function App() {
   const [cleanup, setCleanup] = useState(DEFAULT_CONTROLS.cleanup)
   const [crop, setCrop] = useState<NormalizedCrop>(FULL_CROP)
   const [eraserOn, setEraserOn] = useState(false)
+  const [rebuildOpen, setRebuildOpen] = useState(false)
   const [history, setHistory] = useState<History<EditSnapshot>>(() => createHistory(DEFAULT_EDIT))
   const historyRef = useRef(history)
   const gesture = useRef<EditSnapshot | null>(null)
+  const cropRef = useRef(crop)
+  const rebuildLock = useRef<RebuildLock>('ask')
+  const rebuildGesture = useRef(false)
+  const pendingRebuild = useRef<(() => void) | null>(null)
+  const rebuildOpenRef = useRef(false)
+  const confirmRef = useRef<HTMLDivElement>(null)
+  const returnFocus = useRef<HTMLElement | null>(null)
   const edit = history.present
 
   const updateHistory = useCallback((next: History<EditSnapshot>) => {
@@ -128,13 +147,16 @@ export default function App() {
 
   const edited = useMemo(() => (base && editsActive(edit) ? applyEdits(base, edit) : null), [base, edit])
   const displaySvg = editsActive(edit) ? (editedSvg ?? rawSvg) : rawSvg
-  const statusText = tracing
-    ? 'Tracing…'
-    : editsActive(edit) && displaySvg && !/<path\b/i.test(displaySvg)
-      ? NO_LINES_MESSAGE
-      : notice === NO_LINES_MESSAGE && displaySvg && /<path\b/i.test(displaySvg)
-        ? null
-        : notice
+  const statusText =
+    notice === CROP_RESET_MESSAGE
+      ? CROP_RESET_MESSAGE
+      : tracing
+        ? 'Tracing…'
+        : editsActive(edit) && displaySvg && !/<path\b/i.test(displaySvg)
+          ? NO_LINES_MESSAGE
+          : notice === NO_LINES_MESSAGE && displaySvg && /<path\b/i.test(displaySvg)
+            ? null
+            : notice
   const liveStrokes = edited?.strokes ?? base?.strokes ?? []
   const selected = liveStrokes.find((stroke) => stroke.id === edit.selectedId) ?? null
   const perspectiveValue = edit.perspectiveOn ? edit.quad : null
@@ -174,10 +196,15 @@ export default function App() {
   }
 
   const clearStrokeEdits = useCallback(() => {
-    const present = historyRef.current.present
-    if (present.erasers.length === 0 && Object.keys(present.overrides).length === 0 && present.selectedId === null) {
-      return
-    }
+    const history = historyRef.current
+    const present = history.present
+    const lost =
+      history.past.length > 0 ||
+      history.future.length > 0 ||
+      present.erasers.length > 0 ||
+      Object.keys(present.overrides).length > 0 ||
+      present.selectedId !== null
+    if (!lost) return
     gesture.current = null
     updateHistory(
       createHistory({
@@ -188,6 +215,64 @@ export default function App() {
       }),
     )
   }, [updateHistory])
+
+  function editsWouldBeLost(): boolean {
+    const history = historyRef.current
+    const present = history.present
+    return (
+      history.past.length > 0 ||
+      history.future.length > 0 ||
+      present.erasers.length > 0 ||
+      Object.keys(present.overrides).length > 0
+    )
+  }
+
+  function beginRebuildGesture(source: 'pointer' | 'key' = 'pointer') {
+    rebuildGesture.current = true
+    if (source === 'key' || rebuildLock.current === 'waiting') return
+    rebuildLock.current = 'ask'
+  }
+
+  function endRebuildGesture() {
+    rebuildGesture.current = false
+    if (rebuildLock.current !== 'waiting') rebuildLock.current = 'ask'
+  }
+
+  function requestRebuild(apply: () => void) {
+    if (rebuildLock.current === 'block') return
+    if (rebuildLock.current === 'waiting') {
+      pendingRebuild.current = apply
+      return
+    }
+    if (rebuildLock.current === 'allow' || !editsWouldBeLost()) {
+      clearStrokeEdits()
+      apply()
+      return
+    }
+    pendingRebuild.current = apply
+    rebuildLock.current = 'waiting'
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    rebuildOpenRef.current = true
+    setRebuildOpen(true)
+  }
+
+  function closeRebuild(decision: 'allow' | 'block') {
+    const apply = decision === 'allow' ? pendingRebuild.current : null
+    pendingRebuild.current = null
+    rebuildOpenRef.current = false
+    rebuildLock.current = rebuildGesture.current ? decision : 'ask'
+    setRebuildOpen(false)
+    if (decision === 'allow') clearStrokeEdits()
+    apply?.()
+    returnFocus.current?.focus()
+  }
+
+  function resetCropForPerspective() {
+    if (isFullCrop(cropRef.current)) return
+    cropRef.current = FULL_CROP
+    setCrop(FULL_CROP)
+    setNotice(CROP_RESET_MESSAGE)
+  }
 
   function undo() {
     gesture.current = null
@@ -205,6 +290,7 @@ export default function App() {
       if (event.dataTransfer?.types.includes('Files')) event.preventDefault()
     }
     const onKey = (event: KeyboardEvent) => {
+      if (rebuildOpenRef.current) return
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return
       const target = event.target
       if (target instanceof HTMLTextAreaElement) return
@@ -217,6 +303,8 @@ export default function App() {
     window.addEventListener('dragover', prevent)
     window.addEventListener('drop', prevent)
     window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerup', endRebuildGesture)
+    window.addEventListener('pointercancel', endRebuildGesture)
     return () => {
       sessionRef.current?.dispose()
       sessionRef.current = null
@@ -224,6 +312,8 @@ export default function App() {
       window.removeEventListener('dragover', prevent)
       window.removeEventListener('drop', prevent)
       window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerup', endRebuildGesture)
+      window.removeEventListener('pointercancel', endRebuildGesture)
     }
   }, [updateHistory])
 
@@ -236,6 +326,11 @@ export default function App() {
   useEffect(() => {
     publishSvg(displaySvg)
   }, [displaySvg, publishSvg])
+
+  useEffect(() => {
+    if (!rebuildOpen) return
+    confirmRef.current?.querySelector<HTMLElement>('[data-confirm="cancel"]')?.focus()
+  }, [rebuildOpen])
 
   useEffect(() => {
     if (!base || !editsActive(edit)) return
@@ -284,7 +379,9 @@ export default function App() {
           setRawSvg(next.svg)
           setBase(next.model ? cloneModel(next.model) : null)
           if (!/<path\b/i.test(next.svg)) setNotice(NO_LINES_MESSAGE)
-          else if (!timedOutRef.current) setNotice(null)
+          else if (!timedOutRef.current) {
+            setNotice((current) => (current === CROP_RESET_MESSAGE ? current : null))
+          }
           setTracing(false)
         })
         .catch((reason: unknown) => {
@@ -384,6 +481,7 @@ export default function App() {
       gesture.current = null
       setEraserOn(false)
       updateHistory(createHistory(DEFAULT_EDIT))
+      cropRef.current = FULL_CROP
       setCrop(FULL_CROP)
       const preview = new Uint8Array(loaded.preview.byteLength)
       preview.set(loaded.preview)
@@ -455,12 +553,19 @@ export default function App() {
                     src={originalUrl}
                     crop={crop}
                     onCrop={(next) => {
-                      clearStrokeEdits()
-                      setCrop(next)
+                      requestRebuild(() => {
+                        cropRef.current = next
+                        setCrop(next)
+                      })
+                    }}
+                    onCropGesture={(phase) => {
+                      if (phase === 'start') beginRebuildGesture('pointer')
+                      else endRebuildGesture()
                     }}
                     perspective={perspectiveValue}
                     onPerspective={(quad) => {
                       updateHistory(replacePresent(historyRef.current, { ...historyRef.current.present, quad, perspectiveOn: true }))
+                      resetCropForPerspective()
                     }}
                     onPerspectiveGesture={(phase) => {
                       if (phase === 'start') beginEditGesture()
@@ -476,12 +581,24 @@ export default function App() {
                     type="checkbox"
                     checked={edit.perspectiveOn}
                     onChange={(event) => {
-                      changeEdit({ perspectiveOn: event.currentTarget.checked })
+                      const enabled = event.currentTarget.checked
+                      changeEdit({ perspectiveOn: enabled })
+                      if (enabled) resetCropForPerspective()
                     }}
                   />
                   <label htmlFor="fix-perspective">Fix perspective</label>
                 </div>
-                <button type="button" className="text-button" onClick={() => setCrop(FULL_CROP)}>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    if (isFullCrop(cropRef.current)) return
+                    requestRebuild(() => {
+                      cropRef.current = FULL_CROP
+                      setCrop(FULL_CROP)
+                    })
+                  }}
+                >
                   Reset crop
                 </button>
               </div>
@@ -500,9 +617,11 @@ export default function App() {
                     type="checkbox"
                     checked={cleanup}
                     onChange={(event) => {
-                      if (event.currentTarget.checked) timedOutRef.current = false
-                      clearStrokeEdits()
-                      setCleanup(event.currentTarget.checked)
+                      const enabled = event.currentTarget.checked
+                      requestRebuild(() => {
+                        if (enabled) timedOutRef.current = false
+                        setCleanup(enabled)
+                      })
                     }}
                   />
                   <label htmlFor="clean-up-lines">Clean up lines</label>
@@ -513,9 +632,12 @@ export default function App() {
                     label="Line darkness"
                     value={darkness}
                     onChange={(value) => {
-                      clearStrokeEdits()
-                      setDarkness(value)
+                      requestRebuild(() => {
+                        setDarkness(value)
+                      })
                     }}
+                    onGestureStart={beginRebuildGesture}
+                    onGestureEnd={endRebuildGesture}
                   />
                   <Slider id="smoothing" label="Smoothing" value={smoothing} onChange={setSmoothing} />
                   <Slider
@@ -523,9 +645,12 @@ export default function App() {
                     label="Remove specks"
                     value={specks}
                     onChange={(value) => {
-                      clearStrokeEdits()
-                      setSpecks(value)
+                      requestRebuild(() => {
+                        setSpecks(value)
+                      })
                     }}
+                    onGestureStart={beginRebuildGesture}
+                    onGestureEnd={endRebuildGesture}
                   />
                   {edit.straighten ? (
                     <Slider
@@ -642,6 +767,45 @@ export default function App() {
       ) : (
         <Dropzone busy={busy} onFile={(file) => void openFile(file)} />
       )}
+
+      {rebuildOpen ? (
+        <div className="confirm-backdrop">
+          <div
+            ref={confirmRef}
+            className="confirm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="rebuild-confirm-title"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                closeRebuild('block')
+                return
+              }
+              if (event.key !== 'Tab') return
+              const items = [...(confirmRef.current?.querySelectorAll<HTMLElement>('button') ?? [])]
+              const first = items[0]
+              const last = items[items.length - 1]
+              if (!first || !last) return
+              event.preventDefault()
+              const index = items.indexOf(document.activeElement as HTMLElement)
+              const delta = event.shiftKey ? -1 : 1
+              const next = index < 0 ? (event.shiftKey ? last : first) : items[(index + delta + items.length) % items.length]
+              next?.focus()
+            }}
+          >
+            <p id="rebuild-confirm-title">{REBUILD_CONFIRM_MESSAGE}</p>
+            <div className="confirm-actions">
+              <button type="button" onClick={() => closeRebuild('allow')}>
+                Continue
+              </button>
+              <button type="button" data-confirm="cancel" onClick={() => closeRebuild('block')}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <dl className="facts">
         <div>
@@ -888,7 +1052,7 @@ function Slider({
   label: string
   value: number
   onChange: (value: number) => void
-  onGestureStart?: () => void
+  onGestureStart?: (source: 'pointer' | 'key') => void
   onGestureEnd?: () => void
 }) {
   return (
@@ -900,10 +1064,21 @@ function Slider({
         min={0}
         max={100}
         value={value}
-        onPointerDown={onGestureStart}
-        onPointerUp={onGestureEnd}
-        onPointerCancel={onGestureEnd}
-        onBlur={onGestureEnd}
+        onPointerDown={() => {
+          onGestureStart?.('pointer')
+        }}
+        onPointerUp={() => {
+          onGestureEnd?.()
+        }}
+        onPointerCancel={() => {
+          onGestureEnd?.()
+        }}
+        onKeyDown={(event) => {
+          if (isSliderKey(event.key)) onGestureStart?.('key')
+        }}
+        onKeyUp={(event) => {
+          if (isSliderKey(event.key)) onGestureEnd?.()
+        }}
         onChange={(event) => {
           onChange(Number(event.currentTarget.value))
         }}

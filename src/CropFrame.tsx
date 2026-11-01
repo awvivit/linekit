@@ -21,6 +21,7 @@ export default function CropFrame({
   perspective,
   onPerspective,
   onPerspectiveGesture,
+  onCropGesture,
 }: {
   src: string
   crop: NormalizedCrop
@@ -28,6 +29,7 @@ export default function CropFrame({
   perspective: PerspectiveQuad | null
   onPerspective: (quad: PerspectiveQuad) => void
   onPerspectiveGesture: (phase: 'start' | 'end') => void
+  onCropGesture: (phase: 'start' | 'end') => void
 }) {
   const drag = useRef<Drag | null>(null)
   const cropRef = useRef(crop)
@@ -57,13 +59,16 @@ export default function CropFrame({
     }
     const handle = fullCrop(crop) ? null : hitHandle(point, crop)
     if (handle) {
+      onCropGesture('start')
       drag.current = { kind: 'resize', handle, start: crop }
       return
     }
     if (!fullCrop(crop) && inside(point, crop)) {
+      onCropGesture('start')
       drag.current = { kind: 'move', origin: point, start: crop }
       return
     }
+    onCropGesture('start')
     drag.current = { kind: 'draw', origin: point }
     update({ x: point.x, y: point.y, width: 0, height: 0 })
   }
@@ -109,6 +114,7 @@ export default function CropFrame({
     if (current?.kind === 'draw' && (latest.width < 0.02 || latest.height < 0.02)) {
       update({ x: 0, y: 0, width: 1, height: 1 })
     }
+    if (current && current.kind !== 'perspective') onCropGesture('end')
   }
 
   const right = crop.x + crop.width

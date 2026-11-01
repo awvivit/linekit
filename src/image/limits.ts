@@ -41,6 +41,11 @@ export const CLEANUP_TIMEOUT_MESSAGE =
 
 export const NO_LINES_MESSAGE = 'No lines found. Try darker ink or a closer photo.'
 
+export const REBUILD_CONFIRM_MESSAGE =
+  'This will clear your eraser marks, line smoothing and undo history. Continue?'
+
+export const CROP_RESET_MESSAGE = 'Crop reset after fixing perspective.'
+
 /** Stop a cleanup that is still running and show the original trace. */
 export const CLEANUP_BUDGET_MS = 8000
 
