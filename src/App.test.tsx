@@ -317,6 +317,7 @@ describe('App', () => {
       expect(darkness).toHaveValue('70')
       fireEvent.pointerUp(darkness)
       fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      expect(darkness).toHaveFocus()
       expect(darkness).toHaveValue('90')
       expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()

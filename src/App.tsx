@@ -132,6 +132,7 @@ export default function App() {
   const rebuildOpenRef = useRef(false)
   const confirmRef = useRef<HTMLDivElement>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
+  const rebuildControl = useRef<HTMLElement | null>(null)
   const edit = history.present
 
   const updateHistory = useCallback((next: History<EditSnapshot>) => {
@@ -235,15 +236,19 @@ export default function App() {
     )
   }
 
-  function beginRebuildGesture(source: 'pointer' | 'key' = 'pointer') {
+  function beginRebuildGesture(source: 'pointer' | 'key' = 'pointer', control?: HTMLElement) {
     rebuildGesture.current = true
+    if (control) rebuildControl.current = control
     if (source === 'key' || rebuildLock.current === 'waiting') return
     rebuildLock.current = 'ask'
   }
 
   function endRebuildGesture() {
     rebuildGesture.current = false
-    if (rebuildLock.current !== 'waiting') rebuildLock.current = 'ask'
+    if (rebuildLock.current !== 'waiting') {
+      rebuildLock.current = 'ask'
+      if (!rebuildOpenRef.current) rebuildControl.current = null
+    }
     if (rebuildOpenRef.current) {
       confirmRef.current?.querySelector<HTMLElement>('[data-confirm="cancel"]')?.focus()
     }
@@ -263,21 +268,28 @@ export default function App() {
     }
     pendingRebuild.current = apply
     rebuildLock.current = 'waiting'
-    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    if (returnFocus.current && returnFocus.current !== document.body) returnFocus.current.blur()
+    const active =
+      document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+        ? document.activeElement
+        : null
+    returnFocus.current = rebuildControl.current ?? active
+    if (returnFocus.current && document.activeElement === returnFocus.current) returnFocus.current.blur()
     rebuildOpenRef.current = true
     setRebuildOpen(true)
   }
 
   function closeRebuild(decision: 'allow' | 'block') {
     const apply = decision === 'allow' ? pendingRebuild.current : null
+    const restore = returnFocus.current
     pendingRebuild.current = null
+    returnFocus.current = null
+    rebuildControl.current = null
     rebuildOpenRef.current = false
     rebuildLock.current = rebuildGesture.current ? decision : 'ask'
     setRebuildOpen(false)
     if (decision === 'allow') clearStrokeEdits()
     apply?.()
-    returnFocus.current?.focus()
+    restore?.focus()
   }
 
   function resetCropForPerspective() {
@@ -433,7 +445,18 @@ export default function App() {
     }
     const point = imagePoint(event, image, base.width, base.height)
     if (!point) return
-    event.currentTarget.setPointerCapture(event.pointerId)
+    if (eraserOn) {
+      const surface = event.currentTarget
+      if (typeof surface.setPointerCapture === 'function') {
+        try {
+          surface.setPointerCapture(event.pointerId)
+        } catch {
+          // Capture can be refused once the pointer has ended. Moves still reach the preview.
+        }
+      }
+    } else {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    }
     if (eraserOn) {
       erasePointer.current = event.pointerId
       beginEditGesture()
@@ -1105,7 +1128,7 @@ function Slider({
   label: string
   value: number
   onChange: (value: number) => void
-  onGestureStart?: (source: 'pointer' | 'key') => void
+  onGestureStart?: (source: 'pointer' | 'key', control?: HTMLElement) => void
   onGestureEnd?: () => void
 }) {
   return (
@@ -1117,8 +1140,8 @@ function Slider({
         min={0}
         max={100}
         value={value}
-        onPointerDown={() => {
-          onGestureStart?.('pointer')
+        onPointerDown={(event) => {
+          onGestureStart?.('pointer', event.currentTarget)
         }}
         onPointerUp={() => {
           onGestureEnd?.()
@@ -1127,7 +1150,7 @@ function Slider({
           onGestureEnd?.()
         }}
         onKeyDown={(event) => {
-          if (isSliderKey(event.key)) onGestureStart?.('key')
+          if (isSliderKey(event.key)) onGestureStart?.('key', event.currentTarget)
         }}
         onKeyUp={(event) => {
           if (isSliderKey(event.key)) onGestureEnd?.()
