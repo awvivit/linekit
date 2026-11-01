@@ -13,6 +13,8 @@ type Drag =
 const PERSPECTIVE_CORNERS: readonly PerspectiveCorner[] = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft']
 
 const HANDLE_SIZE = 0.045
+/** Keep the round handles inside the frame so the edge does not clip them. */
+const PERSPECTIVE_HANDLE_INSET = 0.05
 
 export default function CropFrame({
   src,
@@ -148,7 +150,7 @@ export default function CropFrame({
         ) : null}
         {perspective
           ? PERSPECTIVE_CORNERS.map((corner) => {
-              const point = perspective[corner]
+              const point = visiblePerspectiveHandle(perspective[corner])
               return <circle key={corner} className="perspective-handle" cx={point.x} cy={point.y} r={0.028} />
             })
           : null}
@@ -193,9 +195,16 @@ function resize(start: NormalizedCrop, handle: Handle, point: Point): Normalized
   return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
+function visiblePerspectiveHandle(point: Point): Point {
+  return {
+    x: clamp(point.x, PERSPECTIVE_HANDLE_INSET, 1 - PERSPECTIVE_HANDLE_INSET),
+    y: clamp(point.y, PERSPECTIVE_HANDLE_INSET, 1 - PERSPECTIVE_HANDLE_INSET),
+  }
+}
+
 function hitPerspective(point: Point, quad: PerspectiveQuad): PerspectiveCorner | null {
   for (const corner of PERSPECTIVE_CORNERS) {
-    const at = quad[corner]
+    const at = visiblePerspectiveHandle(quad[corner])
     if (Math.abs(point.x - at.x) <= 0.06 && Math.abs(point.y - at.y) <= 0.06) return corner
   }
   return null

@@ -244,12 +244,16 @@ export default function App() {
   function endRebuildGesture() {
     rebuildGesture.current = false
     if (rebuildLock.current !== 'waiting') rebuildLock.current = 'ask'
+    if (rebuildOpenRef.current) {
+      confirmRef.current?.querySelector<HTMLElement>('[data-confirm="cancel"]')?.focus()
+    }
   }
 
   function requestRebuild(apply: () => void) {
     if (rebuildLock.current === 'block') return
     if (rebuildLock.current === 'waiting') {
       pendingRebuild.current = apply
+      confirmRef.current?.querySelector<HTMLElement>('[data-confirm="cancel"]')?.focus()
       return
     }
     if (rebuildLock.current === 'allow' || !editsWouldBeLost()) {
@@ -260,6 +264,7 @@ export default function App() {
     pendingRebuild.current = apply
     rebuildLock.current = 'waiting'
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (returnFocus.current && returnFocus.current !== document.body) returnFocus.current.blur()
     rebuildOpenRef.current = true
     setRebuildOpen(true)
   }
@@ -337,7 +342,12 @@ export default function App() {
 
   useEffect(() => {
     if (!rebuildOpen) return
-    confirmRef.current?.querySelector<HTMLElement>('[data-confirm="cancel"]')?.focus()
+    const focusCancel = () => {
+      confirmRef.current?.querySelector<HTMLElement>('[data-confirm="cancel"]')?.focus()
+    }
+    focusCancel()
+    const frame = window.requestAnimationFrame(focusCancel)
+    return () => window.cancelAnimationFrame(frame)
   }, [rebuildOpen])
 
   useEffect(() => {
@@ -414,12 +424,18 @@ export default function App() {
     }
   }, [originalUrl, photoKey, darkness, smoothing, specks, crop, cleanup, perspectiveToken, edit.perspectiveOn, edit.quad, clearStrokeEdits])
 
+  const erasePointer = useRef<number | null>(null)
+
   function editPointerDown(event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) {
     if (!base) return
+    if (eraserOn) {
+      event.preventDefault()
+    }
     const point = imagePoint(event, image, base.width, base.height)
     if (!point) return
     event.currentTarget.setPointerCapture(event.pointerId)
     if (eraserOn) {
+      erasePointer.current = event.pointerId
       beginEditGesture()
       const present = historyRef.current.present
       updateHistory(
@@ -453,8 +469,18 @@ export default function App() {
     )
   }
 
-  function editPointerUp() {
-    if (eraserOn) endEditGesture()
+  function editPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!eraserOn || erasePointer.current !== event.pointerId) return
+    erasePointer.current = null
+    endEditGesture()
+  }
+
+  function discardErase(event: ReactPointerEvent<HTMLDivElement>) {
+    if (erasePointer.current !== event.pointerId) return
+    erasePointer.current = null
+    const baseline = gesture.current
+    gesture.current = null
+    if (baseline) updateHistory(replacePresent(historyRef.current, baseline))
   }
 
   async function openFile(file: File) {
@@ -530,6 +556,7 @@ export default function App() {
       onPointerDown={editPointerDown}
       onPointerMove={editPointerMove}
       onPointerUp={editPointerUp}
+      onPointerCancel={discardErase}
     />
   )
 
@@ -564,6 +591,9 @@ export default function App() {
                       requestRebuild(() => {
                         cropRef.current = next
                         setCrop(next)
+                        if (!isFullCrop(next)) {
+                          setNotice((current) => (current === CROP_RESET_MESSAGE ? null : current))
+                        }
                       })
                     }}
                     onCropGesture={(phase) => {
@@ -852,6 +882,7 @@ function TracePreview({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerCancel,
 }: {
   alt: string
   src: string | null
@@ -862,7 +893,8 @@ function TracePreview({
   mark: { points: Point[]; radius: number } | null
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) => void
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) => void
-  onPointerUp: () => void
+  onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   const imageRef = useRef<HTMLImageElement>(null)
   const selectedStroke = strokes.find((stroke) => stroke.id === selectedId) ?? null
@@ -876,10 +908,23 @@ function TracePreview({
         if (imageRef.current) onPointerMove(event, imageRef.current)
       }}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onPointerCancel}
+      onDragStart={(event) => {
+        event.preventDefault()
+      }}
     >
       {src ? (
         <div className="preview-art">
-          <img ref={imageRef} src={src} alt={alt} />
+          <img
+            ref={imageRef}
+            src={src}
+            alt={alt}
+            draggable={false}
+            onDragStart={(event) => {
+              event.preventDefault()
+            }}
+          />
           {model ? (
             <svg className="edit-layer" viewBox={`0 0 ${model.width} ${model.height}`} preserveAspectRatio="none">
               {selectedStroke ? (

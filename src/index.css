@@ -507,6 +507,13 @@ figcaption {
   touch-action: auto;
 }
 
+.preview-frame.erasing,
+.preview-frame.erasing img,
+.preview-frame.erasing svg {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
 .preview-frame.erasing img {
   touch-action: none;
   cursor: crosshair;
