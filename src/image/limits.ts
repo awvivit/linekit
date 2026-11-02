@@ -41,6 +41,15 @@ export const CLEANUP_TIMEOUT_MESSAGE =
 
 export const NO_LINES_MESSAGE = 'No lines found. Try darker ink or a closer photo.'
 
+export const NO_LINES_LEFT_MESSAGE = 'No lines left.'
+
+export const NO_LINES_LEFT_UNDO_MESSAGE = 'No lines left. Use Undo to bring them back.'
+
+export const REBUILD_CONFIRM_MESSAGE =
+  'This will clear your eraser marks, line smoothing and undo history. Continue?'
+
+export const CROP_RESET_MESSAGE = 'Crop reset after fixing perspective.'
+
 /** Stop a cleanup that is still running and show the original trace. */
 export const CLEANUP_BUDGET_MS = 8000
 
@@ -62,6 +71,14 @@ export type NormalizedCrop = {
 
 export const FULL_CROP: NormalizedCrop = { x: 0, y: 0, width: 1, height: 1 }
 
+/** Four source corners, clockwise from the top left, in 0–1 image space. */
+export type PerspectiveQuad = {
+  topLeft: { x: number; y: number }
+  topRight: { x: number; y: number }
+  bottomRight: { x: number; y: number }
+  bottomLeft: { x: number; y: number }
+}
+
 export type TraceControls = {
   darkness: number
   smoothing: number
@@ -69,6 +86,8 @@ export type TraceControls = {
   crop: NormalizedCrop
   /** Stroked centerlines. False keeps the filled outline trace. */
   cleanup: boolean
+  /** Null leaves the photo as it was. A quad warps that page before the trace. */
+  perspective: PerspectiveQuad | null
 }
 
 export const DEFAULT_CONTROLS: TraceControls = {
@@ -77,6 +96,7 @@ export const DEFAULT_CONTROLS: TraceControls = {
   specks: 35,
   crop: FULL_CROP,
   cleanup: true,
+  perspective: null,
 }
 
 export type Raster = {

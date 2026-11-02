@@ -7,6 +7,8 @@
 
 **Clean up lines** is on by default. It traces each pen stroke as a single line through the middle of the ink. Passes drawn side by side merge into one, stray dots and short spurs are dropped, and ends that nearly meet are joined. A line that loops back to where it started becomes one closed shape. The Smoothing slider sets how closely curves follow the ink. Turn the switch off to get the original outline trace.
 
+**Straighten shapes** snaps a nearly straight stroke to a line, and a nearly rectangular, circular, or elliptical outline to that shape. The Straighten tolerance slider sets how far the ink may stray. **Close gaps** joins ends that fall inside the gap size you set. **Eraser** erases lines on the result. **Fix perspective** drags the four corners of the photo before tracing. Select a line and move **Smooth this line** to soften that line on its own. **Undo** and **Redo** (Ctrl/Cmd+Z and Shift+Ctrl/Cmd+Z) step through those edits.
+
 The photo shown beside the trace is a smaller copy (about 2000px on the long edge), and the tracing code loads only after you open a photo.
 
 The display name, package name, and Pages base path (`/linekit/`) live in [`src/brand.ts`](src/brand.ts). The npm package name is `linekit`.

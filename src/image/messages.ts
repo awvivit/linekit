@@ -1,3 +1,4 @@
+import type { EditableModel } from './edits.ts'
 import type { TraceControls } from './limits.ts'
 
 export type LoadMessage = {
@@ -22,6 +23,6 @@ export type WorkerResponse =
       height: number
       preview: ArrayBuffer
     }
-  | { kind: 'traced'; id: number; svg: string }
+  | { kind: 'traced'; id: number; svg: string; model?: EditableModel | null }
   | { kind: 'timeout'; id: number }
   | { kind: 'failed'; id: number; message: string }

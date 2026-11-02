@@ -103,29 +103,52 @@ function prepareChains(
 }
 
 export function renderCenterline(model: CenterlineModel, smoothing: number): string {
-  return publishSvg(model.width, model.height, model.chains, model.penWidth, smoothing)
+  return renderChains(model.width, model.height, model.chains, model.penWidth, smoothing)
+}
+
+/** Fit each chain with its own smoothing amount. A single number applies to every chain. */
+export function renderChains(
+  width: number,
+  height: number,
+  chains: ReadonlyArray<{ points: { x: number; y: number }[]; closed: boolean }>,
+  penWidth: number,
+  smoothing: number | readonly number[],
+): string {
+  return publishSvg(width, height, chains, penWidth, smoothing)
 }
 
 function ensureTime(deadline: number): void {
   if (Date.now() > deadline) throw new CleanupTimeoutError()
 }
 
+function smoothingTolerance(smoothing: number): number {
+  return 0.45 + (clamp(smoothing, 0, 100) / 100) * 5.5
+}
+
 function publishSvg(
   width: number,
   height: number,
-  chains: Chain[],
+  chains: ReadonlyArray<{ points: Point[]; closed: boolean }>,
   penWidth: number,
-  smoothing: number,
+  smoothing: number | readonly number[],
 ): string {
-  const tolerance = 0.45 + (clamp(smoothing, 0, 100) / 100) * 5.5
   const stroke = formatNumber(clamp(penWidth, 0.75, Math.max(width, height) / 2))
   const paths = seatPathData(
-    chains.map((chain) => chainToPath(chain, tolerance, penWidth)).filter((path) => path.length > 0),
+    chains
+      .map((chain, index) => {
+        const amount = typeof smoothing === 'number' ? smoothing : (smoothing[index] ?? 28)
+        return chainToPath(chain, smoothingTolerance(amount), penWidth)
+      })
+      .filter((path) => path.length > 0),
   ).map(
     (data) =>
       `<path fill="none" stroke="#000000" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" d="${data}"/>`,
   )
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${paths.join('')}</svg>`
+  return finalizeSvg(svg)
+}
+
+export function finalizeSvg(svg: string): string {
   const optimized = optimize(svg, {
     multipass: true,
     plugins: [

@@ -1,6 +1,6 @@
 import { CleanupTimeoutError, DECODE_MESSAGE, ImageProcessError, type TraceControls } from './limits.ts'
 import type { WorkerResponse } from './messages.ts'
-import type { PreparedPhoto } from './process.ts'
+import type { PreparedPhoto, TraceDocument } from './process.ts'
 
 export type LoadedPhoto = {
   width: number
@@ -17,7 +17,7 @@ export class TraceCancelled extends Error {
 
 export type TraceSession = {
   load: (buffer: ArrayBuffer) => Promise<LoadedPhoto>
-  trace: (controls: TraceControls) => Promise<string>
+  trace: (controls: TraceControls) => Promise<TraceDocument>
   /** Drop any trace that is still running and start a fresh worker. */
   cancel: () => void
   dispose: () => void
@@ -45,8 +45,8 @@ function createLocalSession(): TraceSession {
     },
     async trace(controls) {
       if (!photo) throw new ImageProcessError('decode', 'Choose a photo first.')
-      const { tracePrepared } = await import('./process.ts')
-      return tracePrepared(photo, controls)
+      const { tracePreparedDocument } = await import('./process.ts')
+      return tracePreparedDocument(photo, controls)
     },
     cancel() {},
     dispose() {
@@ -92,7 +92,7 @@ function createWorkerSession(): TraceSession {
       if (response.kind === 'timeout') throw new CleanupTimeoutError()
       if (response.kind === 'failed') throw new ImageProcessError('decode', response.message)
       if (response.kind !== 'traced') throw new ImageProcessError('decode', DECODE_MESSAGE)
-      return response.svg
+      return { svg: response.svg, model: response.model ?? null }
     },
     cancel() {
       if (pending.size === 0) return

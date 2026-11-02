@@ -1,4 +1,5 @@
 import { decodeImage, detectDecodeEnvironment, type DecodeOptions, type DecodedImage } from './decode.ts'
+import { editableFromCenterline, strokesFromSvg, type EditableModel } from './edits.ts'
 import { inspectImage, type SafeImage } from './inspect.ts'
 import {
   BOMB_MESSAGE,
@@ -18,7 +19,13 @@ import {
 import { encodePng } from './png.ts'
 import { applyOrientation, cleanDrawing, cropNormalized, downscaleRaster } from './raster.ts'
 import { buildCenterline, renderCenterline, type CenterlineModel } from './centerline.ts'
+import { perspectiveKey, warpPerspective } from './perspective.ts'
 import { vectorize } from './vectorize.ts'
+
+export type TraceDocument = {
+  svg: string
+  model: EditableModel | null
+}
 
 export type PreparedPhoto = {
   raster: Raster
@@ -78,9 +85,27 @@ export function tracePrepared(
   controls: TraceControls,
   options?: { cache?: CenterlineCache; deadline?: number },
 ): string {
-  const cropped = cropNormalized(photo.raster, controls.crop)
+  return tracePreparedDocument(photo, controls, options).svg
+}
+
+export function tracePreparedDocument(
+  photo: PreparedPhoto,
+  controls: TraceControls,
+  options?: { cache?: CenterlineCache; deadline?: number },
+): TraceDocument {
+  const corrected = warpPerspective(photo.raster, controls.perspective)
+  const cropped = cropNormalized(corrected, controls.crop)
   const binary = cleanDrawing(cropped, controls.darkness, controls.specks)
-  if (controls.cleanup === false) return vectorize(binary, controls.smoothing)
+  if (controls.cleanup === false) {
+    const svg = vectorize(binary, controls.smoothing)
+    const strokes = strokesFromSvg(svg)
+    return {
+      svg,
+      model: strokes.length
+        ? { width: binary.width, height: binary.height, penWidth: 1, kind: 'fill', strokes }
+        : null,
+    }
+  }
   const key = [
     controls.darkness,
     controls.specks,
@@ -88,15 +113,17 @@ export function tracePrepared(
     controls.crop.y,
     controls.crop.width,
     controls.crop.height,
+    perspectiveKey(controls.perspective),
   ].join('|')
   const cached = options?.cache
-  if (cached && cached.key === key && cached.model) return renderCenterline(cached.model, controls.smoothing)
-  const model = buildCenterline(binary, options?.deadline ?? Number.POSITIVE_INFINITY)
+  const model = cached && cached.key === key && cached.model
+    ? cached.model
+    : buildCenterline(binary, options?.deadline ?? Number.POSITIVE_INFINITY)
   if (cached) {
     cached.key = key
     cached.model = model
   }
-  return renderCenterline(model, controls.smoothing)
+  return { svg: renderCenterline(model, controls.smoothing), model: editableFromCenterline(model) }
 }
 
 export async function buildPreview(
