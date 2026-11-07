@@ -3,9 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Linekit**: Draw it. Snap it. Get clean SVG.
-> Take a photo of a drawing on paper, and Linekit turns it into clean SVG line art. It straightens sideways photos, clears out shadows and specks, and lets you tune the result with three sliders: Line darkness, Smoothing and Remove specks. Linekit traces images only in your browser. Nothing is uploaded. Works with PNG, JPEG and WebP, and with HEIC in browsers that can open it.
+> Take a photo of a drawing on paper, and Linekit turns it into SVG on this device. Nothing is uploaded. Works with PNG, JPEG and WebP, and with HEIC in browsers that can open it.
 
-**Clean up lines** is on by default. It traces each pen stroke as a single line through the middle of the ink. Passes drawn side by side merge into one, stray dots and short spurs are dropped, and ends that nearly meet are joined. A line that loops back to where it started becomes one closed shape. The Smoothing slider sets how closely curves follow the ink. Turn the switch off to get the original outline trace.
+**Auto** is the default. It looks at the image in the browser. Plain two-tone ink becomes **Lines**: one editable stroke through the middle of the ink, with straighten, close gaps, and erase. Gray shading, tapered ink, or several flat colors become **Full trace**: filled shapes that keep thickness, tapered ends, gray fills, and flat color. A short note says which one Auto picked, including the starting number of colors for Full trace. One tap switches to Lines or Full trace. Undo puts Auto's result back.
+
+**More controls** holds Smooth out noise, Edge detail, Even out lighting, and, for Full trace, Number of colors. Lines also keeps Pick up faint lines, Smoothing, and Remove specks. Reset puts those controls back to Auto's values and leaves eraser marks and other edits alone. Whether the panel is open is remembered on that device. Fix perspective and crop stay in that panel.
 
 **Straighten shapes** snaps a nearly straight stroke to a line, and a nearly rectangular, circular, or elliptical outline to that shape. The Straighten tolerance slider sets how far the ink may stray. **Close gaps** joins ends that fall inside the gap size you set. **Eraser** erases lines on the result. **Fix perspective** drags the four corners of the photo before tracing. Select a line and move **Smooth this line** to soften that line on its own. **Undo** and **Redo** (Ctrl/Cmd+Z and Shift+Ctrl/Cmd+Z) step through those edits.
 
@@ -56,7 +58,7 @@ Then open [http://127.0.0.1:4173/linekit/](http://127.0.0.1:4173/linekit/).
 
 Linekit is [MIT](LICENSE), copyright 2026 Apolinario Vivit.
 
-Dependencies must carry an identified license. The license check fails on GPL, AGPL, LGPL, SSPL, and unknown licenses. An SPDX `OR` expression is accepted when at least one side is an allowed, identified license. Potrace and any other GPL-family tracing library are out of bounds. The outline trace uses [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs) (public domain) and [SVGO](https://github.com/svg/svgo). Centerlines are implemented in this repo: Zhang–Suen thinning, a Euclidean distance transform, and Schneider cubic fitting. Those papers were used as references; their source was not copied.
+Dependencies must carry an identified license. The license check fails on GPL, AGPL, LGPL, SSPL, and unknown licenses. An SPDX `OR` expression is accepted when at least one side is an allowed, identified license. Potrace and any other GPL-family tracing library are out of bounds. Full trace and the legacy outline use [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs) 1.2.6, dedicated to the public domain under [The Unlicense](https://unlicense.org/) (`node_modules/imagetracerjs/LICENSE`). Its optional `nodecli` folder vendors a separate MIT PNG reader that Linekit does not import. SVGO optimizes the SVG in the browser. Centerlines are implemented in this repo: Zhang–Suen thinning, a Euclidean distance transform, and Schneider cubic fitting. Those papers were used as references; their source was not copied. There is no Potrace and no GPL tracer.
 
 ## Contributing
 

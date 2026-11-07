@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.tsx'
 import { site } from './brand.ts'
 import {
@@ -14,7 +14,12 @@ import {
 import { encodePng } from './image/png.ts'
 
 describe('App', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
   afterEach(() => {
+    localStorage.clear()
     cleanup()
   })
 
@@ -68,7 +73,8 @@ describe('App', () => {
       fireEvent.change(input)
 
       expect(await screen.findByRole('img', { name: 'Traced line art' })).toBeInTheDocument()
-      expect(screen.getByRole('checkbox', { name: 'Clean up lines' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByRole('link', { name: 'Export' })).toBeInTheDocument()
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     } finally {
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
@@ -183,11 +189,14 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(500)
       })
       expect(events).toContain('trace')
+      fireEvent.click(screen.getByRole('radio', { name: 'Lines' }))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(CLEANUP_BUDGET_MS)
       })
       expect(events).toContain('terminate')
-      expect(screen.getByRole('checkbox', { name: 'Clean up lines' })).not.toBeChecked()
       expect(screen.getByRole('status')).toHaveTextContent(CLEANUP_TIMEOUT_MESSAGE)
     } finally {
       vi.useRealTimers()
@@ -213,6 +222,7 @@ describe('App', () => {
     try {
       render(<App />)
       await openBlankPhoto()
+      openMore()
       expect(await screen.findByRole('checkbox', { name: 'Straighten shapes' })).toBeInTheDocument()
       expect(screen.getByRole('checkbox', { name: 'Close gaps' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Eraser' })).toHaveAttribute('aria-pressed', 'false')
@@ -250,6 +260,7 @@ describe('App', () => {
     try {
       render(<App />)
       await openBlankPhoto()
+      openMore()
       const traced = await screen.findByRole('img', { name: 'Traced line art' })
       giveBox(traced, 100, 40)
       expect(screen.getByRole('status')).not.toHaveTextContent('No lines')
@@ -257,7 +268,7 @@ describe('App', () => {
       fireEvent.pointerDown(traced, { clientX: 50, clientY: 10, pointerId: 1 })
       fireEvent.pointerCancel(traced, { pointerId: 1 })
       expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
-      fireEvent.change(screen.getByRole('slider', { name: 'Line darkness' }), { target: { value: '80' } })
+      fireEvent.change(screen.getByRole('slider', { name: 'Pick up faint lines' }), { target: { value: '80' } })
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
       fireEvent.pointerDown(traced, { clientX: 50, clientY: 10, pointerId: 2 })
       fireEvent.lostPointerCapture(traced, { pointerId: 2 })
@@ -274,13 +285,16 @@ describe('App', () => {
     }
   })
 
-  it('asks before a rebuild that would drop edits, once per drag', async () => {
+  it('previews filter changes and resets them without clearing edits', async () => {
     const previousWorker = globalThis.Worker
+    const previousCapture = SVGSVGElement.prototype.setPointerCapture
+    SVGSVGElement.prototype.setPointerCapture = () => {}
     Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: silentWorker() })
     try {
       render(<App />)
       await openBlankPhoto()
-      const darkness = await screen.findByRole('slider', { name: 'Line darkness' })
+      openMore()
+      const darkness = await screen.findByRole('slider', { name: 'Pick up faint lines' })
       fireEvent.change(darkness, { target: { value: '70' } })
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
       expect(darkness).toHaveValue('70')
@@ -288,40 +302,30 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: 'Straighten shapes' }))
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled()
       fireEvent.change(darkness, { target: { value: '80' } })
-      const dialog = screen.getByRole('alertdialog', { name: REBUILD_CONFIRM_MESSAGE })
-      expect(dialog).toBeInTheDocument()
-      expect(darkness).toHaveValue('70')
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus())
-      fireEvent.keyDown(dialog, { key: 'Tab' })
-      expect(screen.getByRole('button', { name: 'Continue' })).toHaveFocus()
-      fireEvent.keyDown(dialog, { key: 'Tab' })
-      expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
-      fireEvent.keyDown(dialog, { key: 'Escape' })
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
-      expect(darkness).toHaveValue('70')
+      expect(darkness).toHaveValue('80')
       expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled()
 
-      fireEvent.click(screen.getByRole('checkbox', { name: 'Clean up lines' }))
-      expect(screen.getByRole('alertdialog')).toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(screen.getByRole('checkbox', { name: 'Clean up lines' })).toBeChecked()
+      fireEvent.click(screen.getByRole('button', { name: 'Reset controls to Auto' }))
+      expect(darkness).toHaveValue('62')
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Reset controls to Auto' })).toHaveTextContent('Reset')
 
-      fireEvent.pointerDown(darkness)
-      fireEvent.change(darkness, { target: { value: '81' } })
+      const crop = screen.getByLabelText('Crop rectangle')
+      giveBox(crop)
+      drawCrop(crop, 10, 10, 80, 70)
+      const dialog = screen.getByRole('alertdialog', { name: REBUILD_CONFIRM_MESSAGE })
       await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus())
-      fireEvent.change(darkness, { target: { value: '90' } })
-      expect(screen.getAllByRole('alertdialog')).toHaveLength(1)
-      expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
-      expect(darkness).toHaveValue('70')
-      fireEvent.pointerUp(darkness)
-      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-      expect(darkness).toHaveFocus()
-      expect(darkness).toHaveValue('90')
-      expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+      fireEvent.keyDown(dialog, { key: 'Tab' })
+      expect(screen.getByRole('button', { name: 'Continue' })).toHaveFocus()
+      fireEvent.keyDown(dialog, { key: 'Escape' })
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+      expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled()
     } finally {
+      SVGSVGElement.prototype.setPointerCapture = previousCapture
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
     }
   })
@@ -334,6 +338,7 @@ describe('App', () => {
     try {
       render(<App />)
       await openBlankPhoto()
+      openMore()
       const crop = await screen.findByLabelText('Crop rectangle')
       giveBox(crop)
       const fullShade = crop.querySelector('.crop-shade')?.getAttribute('d')
@@ -351,6 +356,7 @@ describe('App', () => {
       cleanup()
       render(<App />)
       await openBlankPhoto()
+      openMore()
       const nextCrop = await screen.findByLabelText('Crop rectangle')
       giveBox(nextCrop)
       const nextFull = nextCrop.querySelector('.crop-shade')?.getAttribute('d')
@@ -423,7 +429,101 @@ describe('App', () => {
       Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
     }
   })
+
+  it('explains Auto, keeps color count under More controls, and undoes a mode override', async () => {
+    const previousWorker = globalThis.Worker
+    const traces: string[] = []
+    const plan = {
+      mode: 'full' as const,
+      colorCount: 6,
+      smoothNoise: 0,
+      edgeDetail: 0,
+      evenLighting: false,
+      faintLines: 62,
+      smoothing: 28,
+      specks: 35,
+      summary: 'Auto picked Full trace with 6 colors.',
+    }
+    class FakeWorker extends EventTarget {
+      postMessage(data: { kind: string; id: number; controls?: { view?: string } }) {
+        if (data.kind === 'load') {
+          this.dispatchEvent(
+            new MessageEvent('message', {
+              data: { kind: 'loaded', id: data.id, width: 8, height: 8, preview: new ArrayBuffer(8) },
+            }),
+          )
+          return
+        }
+        traces.push(data.controls?.view ?? '')
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: {
+              kind: 'traced',
+              id: data.id,
+              svg: `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><path fill="#111" d="M1 1 L4 1"/></svg>`,
+              plan,
+              resolved: data.controls?.view === 'lines' ? 'lines' : 'full',
+            },
+          }),
+        )
+      }
+
+      terminate() {}
+    }
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker })
+    try {
+      render(<App />)
+      await openBlankPhoto()
+      expect(await screen.findByText('Auto picked Full trace with 6 colors.')).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.queryByRole('slider', { name: 'Number of colors' })).not.toBeInTheDocument()
+      openMore()
+      const colors = screen.getByRole('slider', { name: 'Number of colors' })
+      expect(colors.closest('#more-controls')).not.toBeNull()
+      expect(document.querySelector('.trace-main #number-of-colors')).toBeNull()
+      const before = traces.length
+      fireEvent.click(screen.getByRole('radio', { name: 'Lines' }))
+      await waitFor(() => expect(traces.length).toBeGreaterThan(before))
+      expect(screen.getByRole('radio', { name: 'Lines' })).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByText('Auto picked Full trace with 6 colors.')).toBeInTheDocument()
+      const traced = traces.length
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+      expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-checked', 'true')
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 500)
+        })
+      })
+      expect(traces.length).toBe(traced)
+    } finally {
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
+    }
+  })
+
+  it('remembers whether More controls are open on this device', async () => {
+    const previousWorker = globalThis.Worker
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: silentWorker() })
+    try {
+      const first = render(<App />)
+      await openBlankPhoto()
+      const toggle = screen.getByRole('button', { name: 'More controls' })
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      first.unmount()
+      render(<App />)
+      await openBlankPhoto()
+      expect(screen.getByRole('button', { name: 'More controls' })).toHaveAttribute('aria-expanded', 'true')
+    } finally {
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
+    }
+  })
 })
+
+function openMore() {
+  const button = screen.getByRole('button', { name: 'More controls' })
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
+}
 
 function silentWorker() {
   return class FakeWorker extends EventTarget {

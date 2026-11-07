@@ -47,9 +47,19 @@ async function handle(message: WorkerRequest): Promise<void> {
     }
     const traced = pipeline.tracePreparedDocument(photo, message.controls, {
       cache: centerlineCache,
-      deadline: message.controls.cleanup ? Date.now() + 7000 : Number.POSITIVE_INFINITY,
+      deadline:
+        message.controls.view === 'full' || message.controls.cleanup === false
+          ? Number.POSITIVE_INFINITY
+          : Date.now() + 7000,
     })
-    scope.postMessage({ kind: 'traced', id: message.id, svg: traced.svg, model: traced.model })
+    scope.postMessage({
+      kind: 'traced',
+      id: message.id,
+      svg: traced.svg,
+      model: traced.model,
+      plan: traced.plan,
+      resolved: traced.resolved,
+    })
   } catch (error) {
     if (error instanceof CleanupTimeoutError) {
       scope.postMessage({ kind: 'timeout', id: message.id })

@@ -25,6 +25,8 @@ declare module 'imagetracerjs' {
     blurdelta?: number
     lcpr?: number
     qcpr?: number
+    /** Exact palette. When set, ImageTracer does not invent a second palette. */
+    pal?: Array<{ r: number; g: number; b: number; a: number }>
   }
 
   export type ImageTracer = {
