@@ -143,7 +143,7 @@ function measure(raster: Raster): Stats {
     content,
     palette,
     colorful,
-    bands: lumaBands(luma, chroma),
+    bands: lumaBands(luma, chroma, width, height),
     widthCv: widthVariation(luma, chroma, width, height),
     flatNoise: flatNoise(luma, width, height),
     softEdges: softEdgeShare(luma, width, height, content),
@@ -153,15 +153,21 @@ function measure(raster: Raster): Stats {
   }
 }
 
-function lumaBands(luma: Float32Array, chroma: Float32Array): number {
+function lumaBands(luma: Float32Array, chroma: Float32Array, width: number, height: number): number {
   const hist = new Array<number>(16).fill(0)
   let total = 0
-  for (let pixel = 0; pixel < luma.length; pixel += 1) {
-    if ((chroma[pixel] ?? 0) > 16) continue
-    if ((luma[pixel] ?? 255) >= 246) continue
-    const bin = Math.min(15, Math.floor((luma[pixel] ?? 0) / 16))
-    hist[bin] = (hist[bin] ?? 0) + 1
-    total += 1
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixel = y * width + x
+      if ((chroma[pixel] ?? 0) > 16) continue
+      if ((luma[pixel] ?? 255) >= 246) continue
+      // Downsampling and JPEG ringing leave a gray ramp on an otherwise
+      // two-tone edge. Those pixels are not a fill. Only flat neighborhoods count.
+      if (!flatNeighborhood(luma, width, height, x, y, 16)) continue
+      const bin = Math.min(15, Math.floor((luma[pixel] ?? 0) / 16))
+      hist[bin] = (hist[bin] ?? 0) + 1
+      total += 1
+    }
   }
   if (total === 0) return 0
   let bands = 0
@@ -173,6 +179,31 @@ function lumaBands(luma: Float32Array, chroma: Float32Array): number {
     if (amount >= left && amount >= right) bands += 1
   }
   return bands
+}
+
+function flatNeighborhood(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  limit: number,
+): boolean {
+  const center = luma[y * width + x] ?? 0
+  let min = center
+  let max = center
+  for (let dy = -1; dy <= 1; dy += 1) {
+    const sampleY = y + dy
+    if (sampleY < 0 || sampleY >= height) continue
+    for (let dx = -1; dx <= 1; dx += 1) {
+      const sampleX = x + dx
+      if (sampleX < 0 || sampleX >= width) continue
+      const value = luma[sampleY * width + sampleX] ?? center
+      if (value < min) min = value
+      if (value > max) max = value
+    }
+  }
+  return max - min <= limit
 }
 
 function widthVariation(luma: Float32Array, chroma: Float32Array, width: number, height: number): number {
