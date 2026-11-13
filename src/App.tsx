@@ -7,10 +7,10 @@ import {
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
 } from 'react'
 import { site } from './brand.ts'
 import CropFrame from './CropFrame.tsx'
+import { samePlan, type AutoPlan } from './image/classify.ts'
 import {
   applyEdits,
   cloneModel,
@@ -50,20 +50,14 @@ import {
   TOO_LARGE_MESSAGE,
   exceedsByteCap,
   type NormalizedCrop,
+  type TraceView,
 } from './image/limits.ts'
 import { perspectiveKey } from './image/perspective.ts'
 import { TraceCancelled, createTraceSession, type TraceSession } from './image/session.ts'
 
-/** Phones, and iPad split view narrower than 768px. Wider screens are side by side. */
-const COMPACT_QUERY = '(max-width: 767px)'
+const MORE_CONTROLS_KEY = 'linekit.more-controls'
+const MODE_VIEWS = ['auto', 'lines', 'full'] as const
 
-const TRACE_TABS = [
-  { id: 'photo', label: 'Photo' },
-  { id: 'adjust', label: 'Adjust' },
-  { id: 'result', label: 'Result' },
-] as const
-
-type TraceTab = (typeof TRACE_TABS)[number]['id']
 type RebuildLock = 'ask' | 'waiting' | 'allow' | 'block'
 
 function isFullCrop(crop: NormalizedCrop): boolean {
@@ -74,26 +68,27 @@ function isSliderKey(key: string): boolean {
   return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' || key === 'Home' || key === 'End'
 }
 
-function useCompact(): boolean {
-  const [compact, setCompact] = useState(() => {
-    if (typeof window.matchMedia !== 'function') return false
-    return window.matchMedia(COMPACT_QUERY).matches
-  })
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const media = window.matchMedia(COMPACT_QUERY)
-    const onChange = () => {
-      setCompact(media.matches)
+function viewLabel(view: TraceView): string {
+  switch (view) {
+    case 'auto':
+      return 'Auto'
+    case 'lines':
+      return 'Lines'
+    case 'full':
+      return 'Full trace'
+    default: {
+      const exhaustive: never = view
+      return exhaustive
     }
-    onChange()
-    media.addEventListener('change', onChange)
-    return () => {
-      media.removeEventListener('change', onChange)
-    }
-  }, [])
+  }
+}
 
-  return compact
+function readMoreOpen(): boolean {
+  try {
+    return localStorage.getItem(MORE_CONTROLS_KEY) === 'open'
+  } catch {
+    return false
+  }
 }
 
 export default function App() {
@@ -102,8 +97,6 @@ export default function App() {
   const loadId = useRef(0)
   const traceId = useRef(0)
   const timedOutRef = useRef(false)
-  const compact = useCompact()
-  const [tab, setTab] = useState<TraceTab>('photo')
   const [busy, setBusy] = useState(false)
   const [tracing, setTracing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -118,8 +111,16 @@ export default function App() {
   const [darkness, setDarkness] = useState(DEFAULT_CONTROLS.darkness)
   const [smoothing, setSmoothing] = useState(DEFAULT_CONTROLS.smoothing)
   const [specks, setSpecks] = useState(DEFAULT_CONTROLS.specks)
-  const [cleanup, setCleanup] = useState(DEFAULT_CONTROLS.cleanup)
+  const [smoothNoise, setSmoothNoise] = useState(DEFAULT_CONTROLS.smoothNoise ?? 0)
+  const [edgeDetail, setEdgeDetail] = useState(DEFAULT_CONTROLS.edgeDetail ?? 0)
+  const [evenLighting, setEvenLighting] = useState(DEFAULT_CONTROLS.evenLighting === true)
+  const [colorCount, setColorCount] = useState(DEFAULT_CONTROLS.colorCount ?? 6)
+  const [plan, setPlan] = useState<AutoPlan | null>(null)
+  const [moreOpen, setMoreOpen] = useState(readMoreOpen)
+  const [outlineFallback, setOutlineFallback] = useState(false)
   const [crop, setCrop] = useState<NormalizedCrop>(FULL_CROP)
+  const followAutoRef = useRef(true)
+  const planRef = useRef<AutoPlan | null>(null)
   const [eraserOn, setEraserOn] = useState(false)
   const [rebuildOpen, setRebuildOpen] = useState(false)
   const [history, setHistory] = useState<History<EditSnapshot>>(() => createHistory(DEFAULT_EDIT))
@@ -148,10 +149,35 @@ export default function App() {
     setSvgUrl(url)
   }, [])
 
-  const edited = useMemo(() => (base && editsActive(edit) ? applyEdits(base, edit) : null), [base, edit])
-  const displaySvg = editsActive(edit) ? (editedSvg ?? rawSvg) : rawSvg
+  const resolved = edit.view === 'auto' ? (plan?.mode ?? null) : edit.view
+  const linesTools = resolved !== 'full'
+  const perspectiveValue = edit.perspectiveOn ? edit.quad : null
+  const perspectiveToken = perspectiveKey(perspectiveValue)
+  const stamp = [
+    darkness,
+    smoothing,
+    specks,
+    smoothNoise,
+    edgeDetail,
+    evenLighting ? 1 : 0,
+    colorCount,
+    crop.x,
+    crop.y,
+    crop.width,
+    crop.height,
+    perspectiveToken,
+  ].join('|')
+  const restored = edit.frozen && edit.frozen.stamp === stamp ? edit.frozen : null
+  const viewModel = restored?.model ?? base
+  const viewRaw = restored ? restored.rawSvg : rawSvg
+  const edited = useMemo(
+    () => (viewModel && viewModel.kind === 'stroke' && editsActive(edit) ? applyEdits(viewModel, edit) : null),
+    [viewModel, edit],
+  )
+  const strokeEdits = Boolean(viewModel && viewModel.kind === 'stroke' && editsActive(edit))
+  const displaySvg = strokeEdits ? (editedSvg ?? viewRaw) : viewRaw
   const displayHasLines = Boolean(displaySvg && /<path\b/i.test(displaySvg))
-  const traceHadLines = Boolean(rawSvg && /<path\b/i.test(rawSvg))
+  const traceHadLines = Boolean(viewRaw && /<path\b/i.test(viewRaw))
   const statusText =
     notice === CROP_RESET_MESSAGE
       ? CROP_RESET_MESSAGE
@@ -166,10 +192,8 @@ export default function App() {
           : notice === NO_LINES_MESSAGE && displayHasLines
             ? null
             : notice
-  const liveStrokes = edited?.strokes ?? base?.strokes ?? []
+  const liveStrokes = edited?.strokes ?? viewModel?.strokes ?? []
   const selected = liveStrokes.find((stroke) => stroke.id === edit.selectedId) ?? null
-  const perspectiveValue = edit.perspectiveOn ? edit.quad : null
-  const perspectiveToken = perspectiveKey(perspectiveValue)
 
   function beginEditGesture() {
     if (!gesture.current) gesture.current = historyRef.current.present
@@ -221,6 +245,7 @@ export default function App() {
         erasers: [],
         overrides: {},
         selectedId: null,
+        frozen: null,
       }),
     )
   }, [updateHistory])
@@ -290,6 +315,39 @@ export default function App() {
     if (decision === 'allow') clearStrokeEdits()
     apply?.()
     restore?.focus()
+  }
+
+  function selectView(next: TraceView) {
+    const present = historyRef.current.present
+    if (present.view === next) return
+    setOutlineFallback(false)
+    if (next === 'full') setEraserOn(false)
+    const frozenPresent = {
+      ...present,
+      frozen: { stamp, rawSvg: viewRaw, model: viewModel ? cloneModel(viewModel) : null },
+    }
+    updateHistory({
+      past: [...historyRef.current.past, frozenPresent].slice(-40),
+      present: { ...present, view: next, frozen: null },
+      future: [],
+    })
+  }
+
+  function tune(apply: () => void) {
+    followAutoRef.current = false
+    apply()
+  }
+
+  function resetControls() {
+    const next = planRef.current
+    followAutoRef.current = true
+    setDarkness(next?.faintLines ?? DEFAULT_CONTROLS.darkness)
+    setSmoothing(next?.smoothing ?? DEFAULT_CONTROLS.smoothing)
+    setSpecks(next?.specks ?? DEFAULT_CONTROLS.specks)
+    setSmoothNoise(next?.smoothNoise ?? 0)
+    setEdgeDetail(next?.edgeDetail ?? 0)
+    setEvenLighting(next?.evenLighting ?? false)
+    setColorCount(next?.colorCount ?? DEFAULT_CONTROLS.colorCount ?? 6)
   }
 
   function resetCropForPerspective() {
@@ -363,9 +421,17 @@ export default function App() {
   }, [rebuildOpen])
 
   useEffect(() => {
-    if (!base || !editsActive(edit)) return
+    try {
+      localStorage.setItem(MORE_CONTROLS_KEY, moreOpen ? 'open' : 'closed')
+    } catch {
+      // Storage can be blocked. The toggle still works for this visit.
+    }
+  }, [moreOpen])
+
+  useEffect(() => {
+    if (!viewModel || viewModel.kind !== 'stroke' || !editsActive(edit)) return
     let cancelled = false
-    const model = applyEdits(base, edit)
+    const model = applyEdits(viewModel, edit)
     // The cubic fitter stays out of the first page load and is fetched on the first edit.
     void import('./image/render-edits.ts').then(({ renderEditable }) => {
       if (!cancelled) setEditedSvg(renderEditable(model, smoothing))
@@ -373,31 +439,38 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [base, edit, smoothing])
+  }, [viewModel, edit, smoothing])
 
   useEffect(() => {
     const session = sessionRef.current
     if (!originalUrl || !session) return
+    if (edit.frozen && edit.frozen.stamp === stamp) return
     const controls = {
       darkness,
       smoothing,
       specks,
       crop,
-      cleanup,
+      cleanup: edit.view === 'full' ? true : !outlineFallback,
       perspective: edit.perspectiveOn ? edit.quad : null,
+      view: edit.view,
+      smoothNoise,
+      edgeDetail,
+      evenLighting,
+      colorCount,
+      followAuto: followAutoRef.current,
     }
     let budgetTimer = 0
     const timer = window.setTimeout(() => {
       const id = ++traceId.current
       setTracing(true)
-      if (cleanup) {
+      if (edit.view === 'lines') {
         budgetTimer = window.setTimeout(() => {
           if (id !== traceId.current) return
           session.cancel()
           timedOutRef.current = true
           setNotice(CLEANUP_TIMEOUT_MESSAGE)
           clearStrokeEdits()
-          setCleanup(false)
+          setOutlineFallback(true)
           setTracing(false)
         }, CLEANUP_BUDGET_MS)
       }
@@ -408,6 +481,20 @@ export default function App() {
           window.clearTimeout(budgetTimer)
           setRawSvg(next.svg)
           setBase(next.model ? cloneModel(next.model) : null)
+          if (next.plan) {
+            planRef.current = next.plan
+            if (controls.view === 'auto' && next.plan.mode === 'full') setEraserOn(false)
+            setPlan((current) => (samePlan(current, next.plan) ? current : next.plan))
+            if (followAutoRef.current) {
+              setDarkness((value) => (value === next.plan.faintLines ? value : next.plan.faintLines))
+              setSmoothing((value) => (value === next.plan.smoothing ? value : next.plan.smoothing))
+              setSpecks((value) => (value === next.plan.specks ? value : next.plan.specks))
+              setSmoothNoise((value) => (value === next.plan.smoothNoise ? value : next.plan.smoothNoise))
+              setEdgeDetail((value) => (value === next.plan.edgeDetail ? value : next.plan.edgeDetail))
+              setEvenLighting((value) => (value === next.plan.evenLighting ? value : next.plan.evenLighting))
+              setColorCount((value) => (value === next.plan.colorCount ? value : next.plan.colorCount))
+            }
+          }
           if (!/<path\b/i.test(next.svg)) setNotice(NO_LINES_MESSAGE)
           else if (!timedOutRef.current) {
             setNotice((current) => (current === CROP_RESET_MESSAGE ? current : null))
@@ -422,7 +509,7 @@ export default function App() {
             timedOutRef.current = true
             setNotice(CLEANUP_TIMEOUT_MESSAGE)
             clearStrokeEdits()
-            setCleanup(false)
+            setOutlineFallback(true)
             setTracing(false)
             return
           }
@@ -434,16 +521,35 @@ export default function App() {
       window.clearTimeout(timer)
       window.clearTimeout(budgetTimer)
     }
-  }, [originalUrl, photoKey, darkness, smoothing, specks, crop, cleanup, perspectiveToken, edit.perspectiveOn, edit.quad, clearStrokeEdits])
+  }, [
+    originalUrl,
+    photoKey,
+    darkness,
+    smoothing,
+    specks,
+    smoothNoise,
+    edgeDetail,
+    evenLighting,
+    colorCount,
+    crop,
+    outlineFallback,
+    perspectiveToken,
+    edit.perspectiveOn,
+    edit.quad,
+    edit.view,
+    edit.frozen,
+    stamp,
+    clearStrokeEdits,
+  ])
 
   const erasePointer = useRef<number | null>(null)
 
   function editPointerDown(event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) {
-    if (!base) return
+    if (!viewModel) return
     if (eraserOn) {
       event.preventDefault()
     }
-    const point = imagePoint(event, image, base.width, base.height)
+    const point = imagePoint(event, image, viewModel.width, viewModel.height)
     if (!point) return
     if (eraserOn) {
       const surface = event.currentTarget
@@ -457,6 +563,7 @@ export default function App() {
     } else {
       event.currentTarget.setPointerCapture(event.pointerId)
     }
+    if (viewModel.kind !== 'stroke') return
     if (eraserOn) {
       erasePointer.current = event.pointerId
       beginEditGesture()
@@ -464,20 +571,22 @@ export default function App() {
       updateHistory(
         replacePresent(historyRef.current, {
           ...present,
-          erasers: [...present.erasers, { points: [point], radius: eraserRadius(image, base) }],
+          erasers: [...present.erasers, { points: [point], radius: eraserRadius(image, viewModel) }],
         }),
       )
       return
     }
-    const strokes = editsActive(historyRef.current.present) ? applyEdits(base, historyRef.current.present).strokes : base.strokes
+    const strokes = editsActive(historyRef.current.present)
+      ? applyEdits(viewModel, historyRef.current.present).strokes
+      : viewModel.strokes
     const bounds = image.getBoundingClientRect()
-    const scale = bounds.width === 0 ? 1 : base.width / bounds.width
+    const scale = bounds.width === 0 ? 1 : viewModel.width / bounds.width
     selectStroke(nearestStroke(strokes, point, Math.max(8, 14 * scale)))
   }
 
   function editPointerMove(event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) {
-    if (!eraserOn || !gesture.current || !base) return
-    const point = imagePoint(event, image, base.width, base.height)
+    if (!eraserOn || !gesture.current || !viewModel) return
+    const point = imagePoint(event, image, viewModel.width, viewModel.height)
     if (!point) return
     const present = historyRef.current.present
     const marks = present.erasers
@@ -509,8 +618,12 @@ export default function App() {
   async function openFile(file: File) {
     const id = ++loadId.current
     setError(null)
-    setNotice(null)
-    timedOutRef.current = false
+      setNotice(null)
+      timedOutRef.current = false
+      followAutoRef.current = true
+      planRef.current = null
+      setPlan(null)
+      setOutlineFallback(false)
     if (file.size === 0) {
       setError(EMPTY_MESSAGE)
       return
@@ -544,7 +657,6 @@ export default function App() {
       preview.set(loaded.preview)
       setOriginalUrl(URL.createObjectURL(new Blob([preview], { type: 'image/png' })))
       setPhotoKey((value) => value + 1)
-      setTab('photo')
     } catch (reason) {
       if (id !== loadId.current) return
       publishSvg(null)
@@ -571,7 +683,7 @@ export default function App() {
     <TracePreview
       alt={alt}
       src={svgUrl}
-      model={base}
+      model={viewModel}
       strokes={liveStrokes}
       selectedId={selected?.id ?? null}
       eraserOn={eraserOn}
@@ -599,145 +711,183 @@ export default function App() {
       ) : null}
 
       {originalUrl ? (
-        <section className="workspace" aria-label="Trace">
-          {compact ? <TraceTabs tab={tab} onSelect={setTab} /> : null}
-          <div className="panels">
-            <Panel id="photo" compact={compact} tab={tab}>
-              <Dropzone busy={busy} onFile={(file) => void openFile(file)} />
-              <figure>
-                <figcaption>Original</figcaption>
-                <div className="stage">
-                  <CropFrame
-                    src={originalUrl}
-                    crop={crop}
-                    onCrop={(next) => {
-                      requestRebuild(() => {
-                        cropRef.current = next
-                        setCrop(next)
-                        if (!isFullCrop(next)) {
-                          setNotice((current) => (current === CROP_RESET_MESSAGE ? null : current))
-                        }
+        <section className={moreOpen ? 'workspace more-open' : 'workspace'} aria-label="Trace">
+          <div className="trace-main">
+            <Dropzone busy={busy} onFile={(file) => void openFile(file)} />
+            <ModePicker view={edit.view} onSelect={selectView} />
+            <p id="auto-choice" className="auto-note">
+              {plan?.summary ?? 'Checking this image on this device.'}
+            </p>
+            <figure className="result-figure">
+              <figcaption>SVG</figcaption>
+              <div className="stage">{preview('Traced line art')}</div>
+            </figure>
+            <div className="actions">
+              {svgUrl ? (
+                <a href={svgUrl} download="linekit.svg">
+                  Export
+                </a>
+              ) : (
+                <span className="action-pending">Export</span>
+              )}
+              <button type="button" onClick={undo} disabled={!canUndo(history)} aria-keyshortcuts="Control+Z Meta+Z">
+                Undo
+              </button>
+              <button
+                type="button"
+                onClick={redo}
+                disabled={!canRedo(history)}
+                aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+              >
+                Redo
+              </button>
+              <button
+                type="button"
+                aria-expanded={moreOpen}
+                aria-controls="more-controls"
+                onClick={() => {
+                  setMoreOpen((open) => !open)
+                }}
+              >
+                More controls
+              </button>
+              {linesTools && selected ? (
+                <div className="path-smooth">
+                  <Slider
+                    id="smooth-this-line"
+                    label="Smooth this line"
+                    value={edit.overrides[String(selected.id)] ?? smoothing}
+                    onChange={(value) => {
+                      const present = historyRef.current.present
+                      if (present.selectedId === null) return
+                      changeEdit({
+                        overrides: { ...present.overrides, [String(present.selectedId)]: value },
                       })
                     }}
-                    onCropGesture={(phase) => {
-                      if (phase === 'start') beginRebuildGesture('pointer')
-                      else endRebuildGesture()
-                    }}
-                    perspective={perspectiveValue}
-                    onPerspective={(quad) => {
-                      updateHistory(replacePresent(historyRef.current, { ...historyRef.current.present, quad, perspectiveOn: true }))
-                      resetCropForPerspective()
-                    }}
-                    onPerspectiveGesture={(phase) => {
-                      if (phase === 'start') beginEditGesture()
-                      else endEditGesture()
-                    }}
+                    onGestureStart={beginEditGesture}
+                    onGestureEnd={endEditGesture}
                   />
                 </div>
-              </figure>
-              <div className="crop-actions">
-                <div className="switch-row">
-                  <input
-                    id="fix-perspective"
-                    type="checkbox"
-                    checked={edit.perspectiveOn}
-                    onChange={(event) => {
-                      const enabled = event.currentTarget.checked
-                      changeEdit({ perspectiveOn: enabled })
-                      if (enabled) resetCropForPerspective()
-                    }}
-                  />
-                  <label htmlFor="fix-perspective">Fix perspective</label>
-                </div>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => {
-                    if (isFullCrop(cropRef.current)) return
-                    requestRebuild(() => {
-                      cropRef.current = FULL_CROP
-                      setCrop(FULL_CROP)
+              ) : null}
+              <p className="status" role="status">
+                {statusText}
+              </p>
+            </div>
+          </div>
+          <div id="more-controls" className="more-controls" hidden={!moreOpen}>
+            <div className="controls">
+              <button type="button" className="reset-controls" aria-label="Reset controls to Auto" onClick={resetControls}>
+                Reset
+              </button>
+              <div className="sliders">
+                <Slider
+                  id="smooth-noise"
+                  label="Smooth out noise"
+                  value={smoothNoise}
+                  onChange={(value) => {
+                    tune(() => {
+                      setSmoothNoise(value)
                     })
                   }}
-                >
-                  Reset crop
-                </button>
-              </div>
-            </Panel>
-            <Panel id="adjust" compact={compact} tab={tab}>
-              {compact ? (
-                <figure className="live-preview">
-                  <figcaption>Preview</figcaption>
-                  {preview('Live preview')}
-                </figure>
-              ) : null}
-              <div className="controls">
-                <div className="switch-row">
-                  <input
-                    id="clean-up-lines"
-                    type="checkbox"
-                    checked={cleanup}
-                    onChange={(event) => {
-                      const enabled = event.currentTarget.checked
-                      requestRebuild(() => {
-                        if (enabled) timedOutRef.current = false
-                        setCleanup(enabled)
+                />
+                <Slider
+                  id="edge-detail"
+                  label="Edge detail"
+                  value={edgeDetail}
+                  onChange={(value) => {
+                    tune(() => {
+                      setEdgeDetail(value)
+                    })
+                  }}
+                />
+                {resolved === 'full' ? (
+                  <Slider
+                    id="number-of-colors"
+                    label="Number of colors"
+                    min={2}
+                    max={16}
+                    value={colorCount}
+                    onChange={(value) => {
+                      tune(() => {
+                        setColorCount(value)
                       })
                     }}
                   />
-                  <label htmlFor="clean-up-lines">Clean up lines</label>
-                </div>
-                <div className="sliders">
+                ) : null}
+                <Slider
+                  id="smoothing"
+                  label="Smoothing"
+                  value={smoothing}
+                  onChange={(value) => {
+                    tune(() => {
+                      setSmoothing(value)
+                    })
+                  }}
+                />
+                {linesTools ? (
                   <Slider
-                    id="line-darkness"
-                    label="Line darkness"
+                    id="faint-lines"
+                    label="Pick up faint lines"
                     value={darkness}
                     onChange={(value) => {
-                      requestRebuild(() => {
+                      tune(() => {
                         setDarkness(value)
                       })
                     }}
-                    onGestureStart={beginRebuildGesture}
-                    onGestureEnd={endRebuildGesture}
                   />
-                  <Slider id="smoothing" label="Smoothing" value={smoothing} onChange={setSmoothing} />
+                ) : null}
+                {linesTools ? (
                   <Slider
                     id="remove-specks"
                     label="Remove specks"
                     value={specks}
                     onChange={(value) => {
-                      requestRebuild(() => {
+                      tune(() => {
                         setSpecks(value)
                       })
                     }}
-                    onGestureStart={beginRebuildGesture}
-                    onGestureEnd={endRebuildGesture}
                   />
-                  {edit.straighten ? (
-                    <Slider
-                      id="straighten-tolerance"
-                      label="Straighten tolerance"
-                      value={edit.tolerance}
-                      onChange={(value) => {
-                        changeEdit({ tolerance: value })
-                      }}
-                      onGestureStart={beginEditGesture}
-                      onGestureEnd={endEditGesture}
-                    />
-                  ) : null}
-                  {edit.closeGaps ? (
-                    <Slider
-                      id="gap-distance"
-                      label="Gap size"
-                      value={edit.gap}
-                      onChange={(value) => {
-                        changeEdit({ gap: value })
-                      }}
-                      onGestureStart={beginEditGesture}
-                      onGestureEnd={endEditGesture}
-                    />
-                  ) : null}
-                </div>
+                ) : null}
+                {linesTools && edit.straighten ? (
+                  <Slider
+                    id="straighten-tolerance"
+                    label="Straighten tolerance"
+                    value={edit.tolerance}
+                    onChange={(value) => {
+                      changeEdit({ tolerance: value })
+                    }}
+                    onGestureStart={beginEditGesture}
+                    onGestureEnd={endEditGesture}
+                  />
+                ) : null}
+                {linesTools && edit.closeGaps ? (
+                  <Slider
+                    id="gap-distance"
+                    label="Gap size"
+                    value={edit.gap}
+                    onChange={(value) => {
+                      changeEdit({ gap: value })
+                    }}
+                    onGestureStart={beginEditGesture}
+                    onGestureEnd={endEditGesture}
+                  />
+                ) : null}
+              </div>
+              <div className="switch-row">
+                <input
+                  id="even-lighting"
+                  type="checkbox"
+                  checked={evenLighting}
+                  onChange={(event) => {
+                    const enabled = event.currentTarget.checked
+                    tune(() => {
+                      setEvenLighting(enabled)
+                    })
+                  }}
+                />
+                <label htmlFor="even-lighting">Even out lighting</label>
+              </div>
+              {linesTools ? (
                 <div className="tool-row">
                   <div className="tool-check">
                     <input
@@ -770,59 +920,71 @@ export default function App() {
                   >
                     Eraser
                   </button>
-                  <button type="button" onClick={undo} disabled={!canUndo(history)} aria-keyshortcuts="Control+Z Meta+Z">
-                    Undo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={redo}
-                    disabled={!canRedo(history)}
-                    aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
-                  >
-                    Redo
-                  </button>
                 </div>
+              ) : null}
+              <button type="button" onClick={() => void copySvg()} disabled={!svg}>
+                Copy SVG code
+              </button>
+            </div>
+            <figure>
+              <figcaption>Original</figcaption>
+              <div className="stage original-stage">
+                <CropFrame
+                  src={originalUrl}
+                  crop={crop}
+                  onCrop={(next) => {
+                    requestRebuild(() => {
+                      cropRef.current = next
+                      setCrop(next)
+                      if (!isFullCrop(next)) {
+                        setNotice((current) => (current === CROP_RESET_MESSAGE ? null : current))
+                      }
+                    })
+                  }}
+                  onCropGesture={(phase) => {
+                    if (phase === 'start') beginRebuildGesture('pointer')
+                    else endRebuildGesture()
+                  }}
+                  perspective={perspectiveValue}
+                  onPerspective={(quad) => {
+                    updateHistory(replacePresent(historyRef.current, { ...historyRef.current.present, quad, perspectiveOn: true }))
+                    resetCropForPerspective()
+                  }}
+                  onPerspectiveGesture={(phase) => {
+                    if (phase === 'start') beginEditGesture()
+                    else endEditGesture()
+                  }}
+                />
               </div>
-            </Panel>
-            <Panel id="result" compact={compact} tab={tab}>
-              <figure>
-                <figcaption>SVG</figcaption>
-                <div className="stage">{preview('Traced line art')}</div>
-              </figure>
-              <div className="actions">
-                {svgUrl ? (
-                  <a href={svgUrl} download="linekit.svg">
-                    Download .svg
-                  </a>
-                ) : (
-                  <span className="action-pending">Download .svg</span>
-                )}
-                <button type="button" onClick={() => void copySvg()} disabled={!svg}>
-                  Copy SVG code
-                </button>
-                {selected ? (
-                  <div className="path-smooth">
-                    <Slider
-                      id="smooth-this-line"
-                      label="Smooth this line"
-                      value={edit.overrides[String(selected.id)] ?? smoothing}
-                      onChange={(value) => {
-                        const present = historyRef.current.present
-                        if (present.selectedId === null) return
-                        changeEdit({
-                          overrides: { ...present.overrides, [String(present.selectedId)]: value },
-                        })
-                      }}
-                      onGestureStart={beginEditGesture}
-                      onGestureEnd={endEditGesture}
-                    />
-                  </div>
-                ) : null}
-                <p className="status" role="status">
-                  {statusText}
-                </p>
+            </figure>
+            <div className="crop-actions">
+              <div className="switch-row">
+                <input
+                  id="fix-perspective"
+                  type="checkbox"
+                  checked={edit.perspectiveOn}
+                  onChange={(event) => {
+                    const enabled = event.currentTarget.checked
+                    changeEdit({ perspectiveOn: enabled })
+                    if (enabled) resetCropForPerspective()
+                  }}
+                />
+                <label htmlFor="fix-perspective">Fix perspective</label>
               </div>
-            </Panel>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  if (isFullCrop(cropRef.current)) return
+                  requestRebuild(() => {
+                    cropRef.current = FULL_CROP
+                    setCrop(FULL_CROP)
+                  })
+                }}
+              >
+                Reset crop
+              </button>
+            </div>
           </div>
         </section>
       ) : (
@@ -997,73 +1159,45 @@ function eraserRadius(image: HTMLImageElement, model: EditableModel): number {
   return Math.max(model.penWidth, 12 * scale)
 }
 
-function Panel({
-  id,
-  compact,
-  tab,
-  children,
-}: {
-  id: TraceTab
-  compact: boolean
-  tab: TraceTab
-  children: ReactNode
-}) {
-  return (
-    <div
-      id={`panel-${id}`}
-      className={`panel panel-${id}`}
-      role={compact ? 'tabpanel' : undefined}
-      aria-labelledby={compact ? `tab-${id}` : undefined}
-      hidden={compact ? tab !== id : undefined}
-    >
-      {children}
-    </div>
-  )
-}
-
-function TraceTabs({ tab, onSelect }: { tab: TraceTab; onSelect: (tab: TraceTab) => void }) {
+function ModePicker({ view, onSelect }: { view: TraceView; onSelect: (view: TraceView) => void }) {
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.altKey || event.ctrlKey || event.metaKey) return
-    const targetId = event.target instanceof HTMLElement ? event.target.id : ''
-    const focused = TRACE_TABS.findIndex((item) => `tab-${item.id}` === targetId)
-    const index = focused >= 0 ? focused : TRACE_TABS.findIndex((item) => item.id === tab)
+    const index = MODE_VIEWS.indexOf(view)
     if (index < 0) return
     let next = index
-    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % TRACE_TABS.length
-    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-      next = (index - 1 + TRACE_TABS.length) % TRACE_TABS.length
-    } else if (event.key === 'Home') next = 0
-    else if (event.key === 'End') next = TRACE_TABS.length - 1
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % MODE_VIEWS.length
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + MODE_VIEWS.length) % MODE_VIEWS.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = MODE_VIEWS.length - 1
     else return
     event.preventDefault()
-    const item = TRACE_TABS[next]
+    const item = MODE_VIEWS[next]
     if (!item) return
-    onSelect(item.id)
-    document.getElementById(`tab-${item.id}`)?.focus()
+    onSelect(item)
+    document.getElementById(`mode-${item}`)?.focus()
   }
 
   return (
     <div
-      role="tablist"
-      aria-label="Trace"
-      aria-orientation="horizontal"
-      className="tabbar"
+      role="radiogroup"
+      aria-label="Trace mode"
+      aria-describedby="auto-choice"
+      className="mode-picker"
       onKeyDown={onKeyDown}
     >
-      {TRACE_TABS.map((item) => (
+      {MODE_VIEWS.map((item) => (
         <button
-          key={item.id}
+          key={item}
           type="button"
-          role="tab"
-          id={`tab-${item.id}`}
-          aria-selected={tab === item.id}
-          aria-controls={`panel-${item.id}`}
-          tabIndex={tab === item.id ? 0 : -1}
+          role="radio"
+          id={`mode-${item}`}
+          aria-checked={view === item}
+          tabIndex={view === item ? 0 : -1}
           onClick={() => {
-            onSelect(item.id)
+            onSelect(item)
           }}
         >
-          {item.label}
+          {viewLabel(item)}
         </button>
       ))}
     </div>
@@ -1120,6 +1254,8 @@ function Slider({
   id,
   label,
   value,
+  min = 0,
+  max = 100,
   onChange,
   onGestureStart,
   onGestureEnd,
@@ -1127,6 +1263,8 @@ function Slider({
   id: string
   label: string
   value: number
+  min?: number
+  max?: number
   onChange: (value: number) => void
   onGestureStart?: (source: 'pointer' | 'key', control?: HTMLElement) => void
   onGestureEnd?: () => void
@@ -1137,8 +1275,8 @@ function Slider({
       <input
         id={id}
         type="range"
-        min={0}
-        max={100}
+        min={min}
+        max={max}
         value={value}
         onPointerDown={(event) => {
           onGestureStart?.('pointer', event.currentTarget)

@@ -1,4 +1,4 @@
-import type { PerspectiveQuad } from './limits.ts'
+import type { PerspectiveQuad, TraceView } from './limits.ts'
 import { IMAGE_QUAD } from './perspective.ts'
 
 export type Point = { x: number; y: number }
@@ -26,6 +26,12 @@ export type EraserMark = {
   radius: number
 }
 
+export type FrozenTrace = {
+  stamp: string
+  rawSvg: string | null
+  model: EditableModel | null
+}
+
 export type EditSnapshot = {
   straighten: boolean
   tolerance: number
@@ -36,6 +42,9 @@ export type EditSnapshot = {
   perspectiveOn: boolean
   quad: PerspectiveQuad
   selectedId: number | null
+  view: TraceView
+  /** Restores a traced result without running the pipeline again. */
+  frozen: FrozenTrace | null
 }
 
 export const DEFAULT_EDIT: EditSnapshot = {
@@ -48,6 +57,8 @@ export const DEFAULT_EDIT: EditSnapshot = {
   perspectiveOn: false,
   quad: IMAGE_QUAD,
   selectedId: null,
+  view: 'auto',
+  frozen: null,
 }
 
 export function sameSnapshot(left: EditSnapshot, right: EditSnapshot): boolean {

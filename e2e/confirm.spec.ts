@@ -4,31 +4,22 @@ import { join } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { encodePng } from '../src/image/png.ts'
 
-test('mid-drag clear warning restores focus to the slider', async ({ page }) => {
+test('a filter drag previews without clearing edits', async ({ page }) => {
   await page.goto('/linekit/')
   await page.locator('input[type="file"]').setInputFiles(await writeBar())
-  await expect(page.getByRole('img', { name: 'Original photo' })).toBeVisible({ timeout: 20_000 })
-  await showTab(page, 'Adjust')
+  await expect(page.getByRole('img', { name: 'Traced line art' })).toBeVisible({ timeout: 20_000 })
+  await page.getByRole('button', { name: 'More controls' }).click()
   await page.getByRole('checkbox', { name: 'Straighten shapes' }).click()
-  const slider = page.getByRole('slider', { name: 'Line darkness' })
+  const slider = page.getByRole('slider', { name: 'Pick up faint lines' })
+  const undo = page.getByRole('button', { name: 'Undo' })
+  await expect(undo).toBeEnabled()
 
   await dragSlider(page, slider)
-  await expect(page.getByRole('alertdialog')).toBeVisible()
   await page.mouse.up()
-  await page.keyboard.press('Escape')
-  await expect(slider).toBeFocused()
-
-  await dragSlider(page, slider)
-  await expect(page.getByRole('alertdialog')).toBeVisible()
-  await page.mouse.up()
-  await page.getByRole('button', { name: 'Cancel' }).click()
-  await expect(slider).toBeFocused()
-
-  await dragSlider(page, slider)
-  await expect(page.getByRole('alertdialog')).toBeVisible()
-  await page.mouse.up()
-  await page.getByRole('button', { name: 'Continue' }).click()
-  await expect(slider).toBeFocused()
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
+  await expect(undo).toBeEnabled()
+  await expect(slider).not.toHaveValue('62')
 })
 
 async function dragSlider(page: Page, slider: Locator) {
@@ -39,13 +30,6 @@ async function dragSlider(page: Page, slider: Locator) {
   await page.mouse.move(box.x + 8, y)
   await page.mouse.down()
   await page.mouse.move(box.x + box.width - 8, y, { steps: 10 })
-}
-
-async function showTab(page: Page, name: 'Adjust' | 'Result') {
-  const tab = page.getByRole('tab', { name, exact: true })
-  if ((await tab.count()) === 0) return
-  if ((await tab.getAttribute('aria-selected')) === 'true') return
-  await tab.click()
 }
 
 async function writeBar(): Promise<string> {

@@ -8,13 +8,6 @@ const SECRET = 'LKSECRET_GPS_37.8199_-122.4783_vacation-gps-photo'
 
 const origin = 'http://127.0.0.1:4173'
 
-async function showTab(page: Page, name: 'Photo' | 'Adjust' | 'Result') {
-  const tab = page.getByRole('tab', { name, exact: true })
-  if ((await tab.count()) === 0) return
-  if ((await tab.getAttribute('aria-selected')) === 'true') return
-  await tab.click()
-}
-
 test('loads under /linekit/ with no console errors or foreign requests', async ({ page }) => {
   const consoleErrors: string[] = []
   const foreignRequests: string[] = []
@@ -90,41 +83,32 @@ test('traces an uploaded drawing and downloads an SVG with no photo metadata', a
   await page.goto(`${origin}/linekit/`)
   await page.locator('input[type="file"]').setInputFiles(sample)
 
-  await showTab(page, 'Photo')
-  await expect(page.getByRole('img', { name: 'Original photo' })).toBeVisible()
-  await expect(page.getByLabel('Crop rectangle')).toBeVisible()
-  await showTab(page, 'Adjust')
-  await expect(page.getByRole('slider', { name: 'Line darkness' })).toBeVisible()
-  await expect(page.getByRole('slider', { name: 'Smoothing' })).toBeVisible()
-  await expect(page.getByRole('slider', { name: 'Remove specks' })).toBeVisible()
-  const cleanup = page.getByRole('checkbox', { name: 'Clean up lines' })
-  await expect(cleanup).toBeChecked()
-  await showTab(page, 'Result')
+  await expect(page.getByRole('radio', { name: 'Auto', exact: true })).toHaveAttribute('aria-checked', 'true')
   const preview = page.getByRole('img', { name: 'Traced line art' })
   await expect(preview).toBeVisible({ timeout: 20_000 })
   await expect(preview).toHaveAttribute('src', /^blob:/)
   await expect.poll(() => svgText(page)).toContain('stroke-linecap="round"')
 
-  await showTab(page, 'Adjust')
+  await page.getByRole('button', { name: 'More controls' }).click()
+  await expect(page.getByRole('img', { name: 'Original photo' })).toBeVisible()
+  await expect(page.getByLabel('Crop rectangle')).toBeVisible()
+  await expect(page.getByRole('slider', { name: 'Pick up faint lines' })).toBeVisible()
+  await expect(page.getByRole('slider', { name: 'Smoothing' })).toBeVisible()
+  await expect(page.getByRole('slider', { name: 'Remove specks' })).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: 'Clean up lines' })).toHaveCount(0)
   await page.getByRole('slider', { name: 'Smoothing' }).fill('60')
-  await showTab(page, 'Result')
   await expect(preview).toBeVisible()
 
   const cleanedSrc = await preview.getAttribute('src')
-  await showTab(page, 'Adjust')
-  await cleanup.uncheck()
-  await expect(cleanup).not.toBeChecked()
-  await showTab(page, 'Result')
+  await page.getByRole('radio', { name: 'Full trace', exact: true }).click()
+  await expect(page.getByRole('radio', { name: 'Full trace', exact: true })).toHaveAttribute('aria-checked', 'true')
   await expect.poll(async () => preview.getAttribute('src')).not.toBe(cleanedSrc)
   await expect.poll(() => svgText(page)).not.toContain('stroke-linecap="round"')
-  await showTab(page, 'Adjust')
-  await cleanup.check()
-  await expect(cleanup).toBeChecked()
-  await showTab(page, 'Result')
+  await page.getByRole('radio', { name: 'Lines', exact: true }).click()
   await expect.poll(() => svgText(page)).toContain('stroke-linecap="round"')
 
   const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('link', { name: 'Download .svg' }).click()
+  await page.getByRole('link', { name: 'Export' }).click()
   const download = await downloadPromise
   expect(download.suggestedFilename()).toBe('linekit.svg')
   const svgPath = await download.path()
@@ -153,8 +137,7 @@ test('traces an uploaded drawing and downloads an SVG with no photo metadata', a
 })
 
 async function svgText(page: Page): Promise<string> {
-  await showTab(page, 'Result')
-  const link = page.getByRole('link', { name: 'Download .svg' })
+  const link = page.getByRole('link', { name: 'Export' })
   if ((await link.count()) === 0) return ''
   const downloadPromise = page.waitForEvent('download', { timeout: 5_000 })
   await link.click()

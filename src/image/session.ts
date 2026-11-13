@@ -92,7 +92,22 @@ function createWorkerSession(): TraceSession {
       if (response.kind === 'timeout') throw new CleanupTimeoutError()
       if (response.kind === 'failed') throw new ImageProcessError('decode', response.message)
       if (response.kind !== 'traced') throw new ImageProcessError('decode', DECODE_MESSAGE)
-      return { svg: response.svg, model: response.model ?? null }
+      return {
+        svg: response.svg,
+        model: response.model ?? null,
+        plan: response.plan ?? {
+          mode: 'lines',
+          colorCount: 2,
+          smoothNoise: 0,
+          edgeDetail: 0,
+          evenLighting: false,
+          faintLines: controls.darkness,
+          smoothing: controls.smoothing,
+          specks: controls.specks,
+          summary: 'Auto picked Lines.',
+        },
+        resolved: response.resolved ?? 'lines',
+      }
     },
     cancel() {
       if (pending.size === 0) return

@@ -79,6 +79,9 @@ export type PerspectiveQuad = {
   bottomLeft: { x: number; y: number }
 }
 
+/** Auto picks Lines or Full trace. Lines and Full trace are one-tap overrides. */
+export type TraceView = 'auto' | 'lines' | 'full'
+
 export type TraceControls = {
   darkness: number
   smoothing: number
@@ -88,6 +91,21 @@ export type TraceControls = {
   cleanup: boolean
   /** Null leaves the photo as it was. A quad warps that page before the trace. */
   perspective: PerspectiveQuad | null
+  /**
+   * Omitted keeps the pre-mode pipeline: cleanup draws centerlines, and
+   * cleanup off draws the two-tone outline. Auto and Full trace set this.
+   */
+  view?: TraceView
+  /** Edge-preserving low-pass. 0 leaves the raster unchanged. */
+  smoothNoise?: number
+  /** High-pass sharpening. 0 leaves the raster unchanged. */
+  edgeDetail?: number
+  /** Flatten a slow lighting gradient before tracing. */
+  evenLighting?: boolean
+  /** Palette size for Full trace, including paper. */
+  colorCount?: number
+  /** Auto may replace the filter numbers with the on-device plan. */
+  followAuto?: boolean
 }
 
 export const DEFAULT_CONTROLS: TraceControls = {
@@ -97,6 +115,11 @@ export const DEFAULT_CONTROLS: TraceControls = {
   crop: FULL_CROP,
   cleanup: true,
   perspective: null,
+  smoothNoise: 0,
+  edgeDetail: 0,
+  evenLighting: false,
+  colorCount: 6,
+  followAuto: false,
 }
 
 export type Raster = {

@@ -42,16 +42,11 @@ for (const layout of layouts) {
 
     const sample = await writeSketch()
     await page.locator('input[type="file"]').setInputFiles(sample)
-    await expect(page.getByRole('img', { name: 'Original photo' })).toBeVisible()
+    await expect(page.getByRole('img', { name: 'Traced line art' })).toBeVisible({ timeout: 20_000 })
 
-    if (layout.tabs) {
-      await expect(page.getByRole('tablist', { name: 'Trace' })).toBeVisible()
-      await expect(page.getByRole('tab')).toHaveCount(3)
-      await expectPhoneLayout(page)
-    } else {
-      await expect(page.getByRole('tablist')).toHaveCount(0)
-      await expectWideLayout(page)
-    }
+    await expect(page.getByRole('tablist')).toHaveCount(0)
+    if (layout.width < 768) await expectPhoneLayout(page)
+    else await expectWideLayout(page)
 
     expect(await overflowsX(page)).toBe(false)
     expect(consoleErrors).toEqual([])
@@ -64,150 +59,75 @@ for (const layout of layouts) {
 }
 
 async function expectPhoneLayout(page: Page) {
-  const photoTab = page.getByRole('tab', { name: 'Photo', exact: true })
-  const adjustTab = page.getByRole('tab', { name: 'Adjust', exact: true })
-  const resultTab = page.getByRole('tab', { name: 'Result', exact: true })
-
-  await expect(photoTab).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('tabpanel', { name: 'Photo' })).toBeVisible()
-  await expect(page.getByRole('tabpanel', { name: 'Adjust' })).toBeHidden()
-  await expect(adjustTab).toHaveAttribute('aria-controls', 'panel-adjust')
-
-  const bar = await page.getByRole('tablist', { name: 'Trace' }).boundingBox()
-  const viewport = page.viewportSize()
-  expect(bar).toBeTruthy()
-  expect(viewport).toBeTruthy()
-  if (!bar || !viewport) return
-  expect(Math.abs(bar.y + bar.height - viewport.height)).toBeLessThanOrEqual(1)
-  expect(bar.width).toBeLessThanOrEqual(viewport.width + 1)
-
   const rules = await stylesheetText(page)
   expect(rules).toContain('safe-area-inset-bottom')
   expect(rules).toContain('safe-area-inset-left')
   expect(rules).toContain('safe-area-inset-right')
 
+  await expect(page.getByRole('radiogroup', { name: 'Trace mode' })).toBeVisible()
+  const auto = page.getByRole('radio', { name: 'Auto', exact: true })
+  await expect(auto).toHaveAttribute('aria-checked', 'true')
+  const traced = page.getByRole('img', { name: 'Traced line art' })
+  await expect(traced).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByRole('link', { name: 'Export' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'More controls' })).toHaveAttribute('aria-expanded', 'false')
+  await expectTouchZoom(traced)
+  await expectTapTargets(page)
+
+  await page.getByRole('button', { name: 'More controls' }).click()
   const photoSrc = await page.getByRole('img', { name: 'Original photo' }).getAttribute('src')
   expect(photoSrc).toBeTruthy()
   await expectAlignedCrop(page)
-
-  const shade = page.locator('.crop-shade')
-  const fullShade = await shade.getAttribute('d')
-  await drawCrop(page)
-  const croppedShade = await shade.getAttribute('d')
-  expect(croppedShade).toBeTruthy()
-  expect(croppedShade).not.toBe(fullShade)
-
-  await adjustTab.click()
-  await expect(adjustTab).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('tabpanel', { name: 'Adjust' })).toBeVisible()
-  await expect(page.getByRole('tabpanel', { name: 'Photo' })).toBeHidden()
-  const live = page.getByRole('img', { name: 'Live preview' })
-  await expect(live).toBeVisible({ timeout: 20_000 })
-  const pin = await live.evaluate((element) => {
-    const frame = element.closest('.live-preview')
-    return frame ? getComputedStyle(frame).position : ''
-  })
-  expect(pin).toBe('sticky')
-  const liveBox = await live.boundingBox()
   const slider = page.getByRole('slider', { name: 'Smoothing' })
-  const sliderBox = await slider.boundingBox()
-  expect(liveBox && sliderBox && liveBox.y < sliderBox.y).toBe(true)
-
   await slider.fill('73')
   await expect(slider).toHaveValue('73')
   await expectTapTargets(page)
 
-  await resultTab.click()
-  await expect(page.getByRole('tabpanel', { name: 'Result' })).toBeVisible()
-  const traced = page.getByRole('img', { name: 'Traced line art' })
-  await expect(traced).toBeVisible()
-  await expectTouchZoom(traced)
-  await expectTapTargets(page)
-
-  await photoTab.click()
-  await expect(page.getByRole('img', { name: 'Original photo' })).toHaveAttribute('src', photoSrc ?? '')
-  await expect(shade).toHaveAttribute('d', croppedShade ?? '')
-  await expectTapTargets(page)
-
-  await adjustTab.click()
-  await expect(slider).toHaveValue('73')
-
-  await photoTab.focus()
+  await auto.focus()
   await page.keyboard.press('ArrowRight')
-  await expect(adjustTab).toBeFocused()
-  await expect(adjustTab).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('tabpanel', { name: 'Adjust' })).toBeVisible()
-  await page.keyboard.press('ArrowRight')
-  await expect(resultTab).toBeFocused()
-  await expect(resultTab).toHaveAttribute('aria-selected', 'true')
-  await page.keyboard.press('ArrowRight')
-  await expect(photoTab).toBeFocused()
-  await page.keyboard.press('ArrowLeft')
-  await expect(resultTab).toBeFocused()
+  const lines = page.getByRole('radio', { name: 'Lines', exact: true })
+  await expect(lines).toBeFocused()
+  await expect(lines).toHaveAttribute('aria-checked', 'true')
   await page.keyboard.press('Home')
-  await expect(photoTab).toBeFocused()
-  await expect(photoTab).toHaveAttribute('aria-selected', 'true')
-  await page.keyboard.press('Tab')
-  await expect(page.locator('input[type="file"]')).toBeFocused()
-
-  await expect(page.getByRole('img', { name: 'Original photo' })).toHaveAttribute('src', photoSrc ?? '')
-  expect(await overflowsX(page)).toBe(false)
-  await adjustTab.click()
+  await expect(auto).toBeFocused()
+  await expect(auto).toHaveAttribute('aria-checked', 'true')
   await expect(slider).toHaveValue('73')
+  expect(await overflowsX(page)).toBe(false)
 }
 
 async function expectWideLayout(page: Page) {
-  await expect(page.getByRole('img', { name: 'Original photo' })).toBeVisible()
-  await expect(page.getByLabel('Crop rectangle')).toBeVisible()
-  await expect(page.getByRole('slider', { name: 'Line darkness' })).toBeVisible()
-  await expect(page.getByRole('slider', { name: 'Smoothing' })).toBeVisible()
-  await expect(page.getByRole('slider', { name: 'Remove specks' })).toBeVisible()
-  await expect(page.getByRole('checkbox', { name: 'Clean up lines' })).toBeVisible()
   const traced = page.getByRole('img', { name: 'Traced line art' })
   await expect(traced).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByRole('link', { name: 'Export' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'More controls' })).toHaveAttribute('aria-expanded', 'false')
   await expectTouchZoom(traced)
-  await expectAlignedCrop(page)
-
-  const stages = page.locator('.stage')
-  await expect(stages).toHaveCount(2)
-  const photo = await stages.nth(0).boundingBox()
-  const svg = await stages.nth(1).boundingBox()
-  expect(photo).toBeTruthy()
-  expect(svg).toBeTruthy()
-  if (!photo || !svg) return
-  expect(photo.height).toBeGreaterThan(120)
-  expect(svg.height).toBeGreaterThan(120)
-  expect(Math.abs(photo.width - svg.width)).toBeLessThanOrEqual(2)
-  expect(Math.abs(photo.height - svg.height)).toBeLessThanOrEqual(2)
-  expect(svg.x).toBeGreaterThan(photo.x + photo.width - 2)
-  const photoImg = await page.getByRole('img', { name: 'Original photo' }).boundingBox()
-  const tracedBox = await traced.boundingBox()
-  expect(photoImg).toBeTruthy()
-  expect(tracedBox).toBeTruthy()
-  if (photoImg && tracedBox) {
-    expect(photoImg.width > photo.width * 0.9 || photoImg.height > photo.height * 0.9).toBe(true)
-    expect(tracedBox.width > svg.width * 0.9 || tracedBox.height > svg.height * 0.9).toBe(true)
-    expect(Math.abs(photoImg.height - tracedBox.height)).toBeLessThanOrEqual(8)
-    expect(Math.abs(photoImg.width - tracedBox.width)).toBeLessThanOrEqual(8)
-  }
-
-  const photoSrc = await page.getByRole('img', { name: 'Original photo' }).getAttribute('src')
-  const smoothing = page.getByRole('slider', { name: 'Smoothing' })
-  await smoothing.fill('73')
-  await page.getByRole('slider', { name: 'Line darkness' }).focus()
-  await page.keyboard.press('Tab')
-  await expect(smoothing).toBeFocused()
-  await page.keyboard.press('Tab')
-  await expect(page.getByRole('slider', { name: 'Remove specks' })).toBeFocused()
-  await expect(smoothing).toHaveValue('73')
-  await expect(page.getByRole('img', { name: 'Original photo' })).toHaveAttribute('src', photoSrc ?? '')
-  await expect(traced).toBeVisible()
-
-  const scrolling = await page.evaluate(() => {
+  const closedScroll = await page.evaluate(() => {
     const root = document.documentElement
     return root.scrollHeight > root.clientHeight + 1 || root.scrollWidth > root.clientWidth + 1
   })
-  expect(scrolling).toBe(false)
+  expect(closedScroll).toBe(false)
+
+  await page.getByRole('button', { name: 'More controls' }).click()
+  await expect(page.getByRole('img', { name: 'Original photo' })).toBeVisible()
+  await expect(page.getByLabel('Crop rectangle')).toBeVisible()
+  await expect(page.getByRole('slider', { name: 'Pick up faint lines' })).toBeVisible()
+  await expect(page.getByRole('slider', { name: 'Smoothing' })).toBeVisible()
+  await expect(page.getByRole('slider', { name: 'Remove specks' })).toBeVisible()
+  await expectAlignedCrop(page)
+  const photoSrc = await page.getByRole('img', { name: 'Original photo' }).getAttribute('src')
+  const smoothing = page.getByRole('slider', { name: 'Smoothing' })
+  await smoothing.fill('73')
+  await page.getByRole('slider', { name: 'Edge detail' }).focus()
+  await page.keyboard.press('Tab')
+  await expect(smoothing).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('slider', { name: 'Pick up faint lines' })).toBeFocused()
+  await expect(smoothing).toHaveValue('73')
+  await expect(page.getByRole('img', { name: 'Original photo' })).toHaveAttribute('src', photoSrc ?? '')
+  await expect(traced).toBeVisible()
+  const stage = await traced.boundingBox()
+  expect(stage).toBeTruthy()
+  if (stage) expect(stage.height).toBeGreaterThan(120)
   await expectTapTargets(page)
 }
 
@@ -250,16 +170,6 @@ async function expectTouchZoom(traced: Locator) {
   expect(cropTouch).toBe('none')
 }
 
-async function drawCrop(page: Page) {
-  const crop = page.getByLabel('Crop rectangle')
-  const box = await crop.boundingBox()
-  if (!box) throw new Error('Crop rectangle has no box')
-  await page.mouse.move(box.x + box.width * 0.18, box.y + box.height * 0.22)
-  await page.mouse.down()
-  await page.mouse.move(box.x + box.width * 0.78, box.y + box.height * 0.8)
-  await page.mouse.up()
-}
-
 async function overflowsX(page: Page): Promise<boolean> {
   return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)
 }
@@ -281,18 +191,8 @@ async function stylesheetText(page: Page): Promise<string> {
 async function saveShots(page: Page, width: number) {
   const directory = '/opt/cursor/artifacts/screenshots'
   mkdirSync(directory, { recursive: true })
-  if (width === 1280) {
-    await page.screenshot({ path: join(directory, 'linekit-1280.png') })
-    return
-  }
-  await page.getByRole('tab', { name: 'Photo', exact: true }).click()
-  await page.screenshot({ path: join(directory, 'linekit-375-photo.png') })
-  await page.getByRole('tab', { name: 'Adjust', exact: true }).click()
-  await expect(page.getByRole('img', { name: 'Live preview' })).toBeVisible()
-  await page.screenshot({ path: join(directory, 'linekit-375-adjust.png') })
-  await page.getByRole('tab', { name: 'Result', exact: true }).click()
   await expect(page.getByRole('img', { name: 'Traced line art' })).toBeVisible()
-  await page.screenshot({ path: join(directory, 'linekit-375-result.png') })
+  await page.screenshot({ path: join(directory, `linekit-layout-${width}.png`) })
 }
 
 async function writeSketch(): Promise<string> {
