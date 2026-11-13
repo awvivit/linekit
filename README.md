@@ -2,6 +2,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+Linekit traces your drawing into clean, editable SVG, and your photo stays on your device.
+
+Open a photo and Auto picks the method: Lines for plain ink, or Full trace when your drawing has thickness, shading, or color, so the result still looks like your ink. More controls are there if you want them, and Reset puts those back without undoing your edits.
+
 > **Linekit**: Draw it. Snap it. Get clean SVG.
 > Take a photo of a drawing on paper, and Linekit turns it into SVG on this device. Nothing is uploaded. Works with PNG, JPEG and WebP, and with HEIC in browsers that can open it.
 
