@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { site } from './brand.ts'
 import CropFrame from './CropFrame.tsx'
+import { CROP_CANCELLED, SELECTION_CLEARED, lineNote, lineSelectedNote, moveLine, sameCrop } from './frame-keys.ts'
 import { samePlan, type AutoPlan } from './image/classify.ts'
 import {
   applyEdits,
@@ -24,7 +25,6 @@ import {
   type Stroke,
 } from './image/edits.ts'
 import {
-  canRedo,
   canUndo,
   commitHistory,
   createHistory,
@@ -59,6 +59,9 @@ const MORE_CONTROLS_KEY = 'linekit.more-controls'
 const MODE_VIEWS = ['auto', 'lines', 'full'] as const
 
 type RebuildLock = 'ask' | 'waiting' | 'allow' | 'block'
+type UndoItem =
+  | { kind: 'edit' }
+  | { kind: 'crop'; before: NormalizedCrop; after: NormalizedCrop }
 
 function isFullCrop(crop: NormalizedCrop): boolean {
   return crop.x <= 0.005 && crop.y <= 0.005 && crop.width >= 0.99 && crop.height >= 0.99
@@ -117,6 +120,7 @@ export default function App() {
   const [colorCount, setColorCount] = useState(DEFAULT_CONTROLS.colorCount ?? 6)
   const [plan, setPlan] = useState<AutoPlan | null>(null)
   const [moreOpen, setMoreOpen] = useState(readMoreOpen)
+  const [keyboardNote, setKeyboardNote] = useState('')
   const [outlineFallback, setOutlineFallback] = useState(false)
   const [crop, setCrop] = useState<NormalizedCrop>(FULL_CROP)
   const followAutoRef = useRef(true)
@@ -135,11 +139,56 @@ export default function App() {
   const returnFocus = useRef<HTMLElement | null>(null)
   const rebuildControl = useRef<HTMLElement | null>(null)
   const edit = history.present
+  const undoTrail = useRef<UndoItem[]>([])
+  const redoTrail = useRef<UndoItem[]>([])
+  const cropSession = useRef<number | null>(null)
+  const [undoSteps, setUndoSteps] = useState(0)
+  const [redoSteps, setRedoSteps] = useState(0)
 
   const updateHistory = useCallback((next: History<EditSnapshot>) => {
     historyRef.current = next
     setHistory(next)
   }, [])
+
+  function syncTrailCounts() {
+    setUndoSteps(undoTrail.current.length)
+    setRedoSteps(redoTrail.current.length)
+  }
+
+  function resetTrails() {
+    undoTrail.current = []
+    redoTrail.current = []
+    cropSession.current = null
+    syncTrailCounts()
+  }
+
+  function pushEditUndo() {
+    undoTrail.current.push({ kind: 'edit' })
+    redoTrail.current = []
+    syncTrailCounts()
+  }
+
+  function pushCropUndo(before: NormalizedCrop, after: NormalizedCrop) {
+    if (sameCrop(before, after)) return
+    if (cropSession.current === null) cropSession.current = undoTrail.current.length
+    undoTrail.current.push({ kind: 'crop', before, after })
+    redoTrail.current = []
+    syncTrailCounts()
+  }
+
+  function cancelCropSession() {
+    const start = cropSession.current
+    cropSession.current = null
+    if (start === null) return
+    const kept: UndoItem[] = []
+    for (let index = 0; index < undoTrail.current.length; index += 1) {
+      const item = undoTrail.current[index]
+      if (!item || (index >= start && item.kind === 'crop')) continue
+      kept.push(item)
+    }
+    undoTrail.current = kept
+    syncTrailCounts()
+  }
 
   const publishSvg = useCallback((next: string | null) => {
     if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current)
@@ -210,6 +259,7 @@ export default function App() {
       present,
       future: [],
     })
+    pushEditUndo()
   }
 
   function changeEdit(patch: Partial<EditSnapshot>) {
@@ -219,7 +269,10 @@ export default function App() {
       updateHistory(replacePresent(historyRef.current, next))
       return
     }
-    updateHistory(commitHistory(historyRef.current, next, sameSnapshot))
+    const committed = commitHistory(historyRef.current, next, sameSnapshot)
+    if (committed === historyRef.current) return
+    updateHistory(committed)
+    pushEditUndo()
   }
 
   function selectStroke(id: number | null) {
@@ -248,6 +301,7 @@ export default function App() {
         frozen: null,
       }),
     )
+    resetTrails()
   }, [updateHistory])
 
   function editsWouldBeLost(): boolean {
@@ -331,6 +385,7 @@ export default function App() {
       present: { ...present, view: next, frozen: null },
       future: [],
     })
+    pushEditUndo()
   }
 
   function tune(apply: () => void) {
@@ -357,15 +412,33 @@ export default function App() {
     setNotice(CROP_RESET_MESSAGE)
   }
 
-  function undo() {
+  const undo = useCallback(() => {
     gesture.current = null
-    updateHistory(undoHistory(historyRef.current))
-  }
+    const item = undoTrail.current.pop()
+    if (!item) return
+    if (item.kind === 'edit') updateHistory(undoHistory(historyRef.current))
+    else {
+      cropRef.current = item.before
+      setCrop(item.before)
+    }
+    redoTrail.current.push(item)
+    setUndoSteps(undoTrail.current.length)
+    setRedoSteps(redoTrail.current.length)
+  }, [updateHistory])
 
-  function redo() {
+  const redo = useCallback(() => {
     gesture.current = null
-    updateHistory(redoHistory(historyRef.current))
-  }
+    const item = redoTrail.current.pop()
+    if (!item) return
+    if (item.kind === 'edit') updateHistory(redoHistory(historyRef.current))
+    else {
+      cropRef.current = item.after
+      setCrop(item.after)
+    }
+    undoTrail.current.push(item)
+    setUndoSteps(undoTrail.current.length)
+    setRedoSteps(redoTrail.current.length)
+  }, [updateHistory])
 
   useEffect(() => {
     document.title = site.name
@@ -379,9 +452,8 @@ export default function App() {
       if (target instanceof HTMLTextAreaElement) return
       if (target instanceof HTMLInputElement && target.type !== 'range' && target.type !== 'checkbox') return
       event.preventDefault()
-      gesture.current = null
-      if (event.shiftKey) updateHistory(redoHistory(historyRef.current))
-      else updateHistory(undoHistory(historyRef.current))
+      if (event.shiftKey) redo()
+      else undo()
     }
     window.addEventListener('dragover', prevent)
     window.addEventListener('drop', prevent)
@@ -398,7 +470,7 @@ export default function App() {
       window.removeEventListener('pointerup', endRebuildGesture)
       window.removeEventListener('pointercancel', endRebuildGesture)
     }
-  }, [updateHistory])
+  }, [undo, redo])
 
   useEffect(() => {
     return () => {
@@ -651,6 +723,7 @@ export default function App() {
       gesture.current = null
       setEraserOn(false)
       updateHistory(createHistory(DEFAULT_EDIT))
+      resetTrails()
       cropRef.current = FULL_CROP
       setCrop(FULL_CROP)
       const preview = new Uint8Array(loaded.preview.byteLength)
@@ -692,11 +765,16 @@ export default function App() {
       onPointerMove={editPointerMove}
       onPointerUp={editPointerUp}
       onPointerCancel={discardErase}
+      onPick={selectStroke}
+      onAnnounce={setKeyboardNote}
     />
   )
 
   return (
     <main className={originalUrl ? 'shell editing' : 'shell'}>
+      <p className="keyboard-live" aria-live="polite" aria-atomic="true">
+        {keyboardNote}
+      </p>
       <header className="masthead">
         <p className="eyebrow">In the browser</p>
         <h1>{site.name}</h1>
@@ -730,13 +808,13 @@ export default function App() {
               ) : (
                 <span className="action-pending">Export</span>
               )}
-              <button type="button" onClick={undo} disabled={!canUndo(history)} aria-keyshortcuts="Control+Z Meta+Z">
+              <button type="button" onClick={undo} disabled={undoSteps === 0} aria-keyshortcuts="Control+Z Meta+Z">
                 Undo
               </button>
               <button
                 type="button"
                 onClick={redo}
-                disabled={!canRedo(history)}
+                disabled={redoSteps === 0}
                 aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
               >
                 Redo
@@ -932,19 +1010,41 @@ export default function App() {
                 <CropFrame
                   src={originalUrl}
                   crop={crop}
-                  onCrop={(next) => {
+                  onCrop={(next, note) => {
+                    const previous = cropRef.current
+                    const undoable = note !== undefined && note !== CROP_CANCELLED && !editsWouldBeLost()
                     requestRebuild(() => {
                       cropRef.current = next
                       setCrop(next)
+                      if (note) setKeyboardNote(note)
+                      if (undoable) pushCropUndo(previous, next)
                       if (!isFullCrop(next)) {
                         setNotice((current) => (current === CROP_RESET_MESSAGE ? null : current))
                       }
                     })
                   }}
-                  onCropGesture={(phase) => {
-                    if (phase === 'start') beginRebuildGesture('pointer')
-                    else endRebuildGesture()
+                  onCropGesture={(phase, source, control) => {
+                    switch (phase) {
+                      case 'start':
+                        beginRebuildGesture(source, control)
+                        return
+                      case 'end':
+                        endRebuildGesture()
+                        return
+                      case 'accept':
+                        cropSession.current = null
+                        return
+                      case 'cancel':
+                        cancelCropSession()
+                        endRebuildGesture()
+                        return
+                      default: {
+                        const exhaustive: never = phase
+                        return exhaustive
+                      }
+                    }
                   }}
+                  onAnnounce={setKeyboardNote}
                   perspective={perspectiveValue}
                   onPerspective={(quad) => {
                     updateHistory(replacePresent(historyRef.current, { ...historyRef.current.present, quad, perspectiveOn: true }))
@@ -1068,6 +1168,8 @@ function TracePreview({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onPick,
+  onAnnounce,
 }: {
   alt: string
   src: string | null
@@ -1080,12 +1182,66 @@ function TracePreview({
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) => void
   onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
   onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onPick: (id: number | null) => void
+  onAnnounce: (message: string) => void
 }) {
   const imageRef = useRef<HTMLImageElement>(null)
+  const [cursor, setCursor] = useState(0)
+  const [armed, setArmed] = useState(false)
+  const [trackedSelection, setTrackedSelection] = useState(selectedId)
+  const canPick = Boolean(model && model.kind === 'stroke' && strokes.length > 0 && !eraserOn)
   const selectedStroke = strokes.find((stroke) => stroke.id === selectedId) ?? null
+  if (selectedId !== trackedSelection) {
+    setTrackedSelection(selectedId)
+    const selectedIndex = strokes.findIndex((stroke) => stroke.id === selectedId)
+    if (selectedIndex >= 0) setCursor(selectedIndex)
+  }
+  const maxIndex = Math.max(strokes.length - 1, 0)
+  if (strokes.length > 0 && cursor > maxIndex) setCursor(maxIndex)
+  const active = strokes[Math.min(cursor, maxIndex)]
+  const target = armed && active && active.id !== selectedId ? active : null
+
+  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!canPick || event.altKey || event.ctrlKey || event.metaKey) return
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onPick(null)
+      onAnnounce(SELECTION_CLEARED)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const stroke = strokes[cursor]
+      if (!stroke) return
+      onPick(stroke.id)
+      onAnnounce(lineSelectedNote(cursor))
+      return
+    }
+    const next = moveLine(cursor, strokes.length, event.key)
+    if (next === null) {
+      if (isArrowKey(event.key) || event.key === 'Home' || event.key === 'End') event.preventDefault()
+      return
+    }
+    event.preventDefault()
+    setArmed(true)
+    setCursor(next)
+    onAnnounce(lineNote(next))
+  }
+
   return (
     <div
       className={eraserOn ? 'frame preview-frame erasing' : 'frame preview-frame'}
+      role={canPick ? 'listbox' : undefined}
+      aria-label={canPick ? 'Traced lines' : undefined}
+      aria-activedescendant={canPick && active ? `traced-line-${active.id}` : undefined}
+      tabIndex={canPick ? 0 : undefined}
+      onKeyDown={onKeyDown}
+      onFocus={() => {
+        setArmed(true)
+      }}
+      onBlur={() => {
+        setArmed(false)
+      }}
       onPointerDown={(event) => {
         if (imageRef.current) onPointerDown(event, imageRef.current)
       }}
@@ -1112,6 +1268,13 @@ function TracePreview({
           />
           {model ? (
             <svg className="edit-layer" viewBox={`0 0 ${model.width} ${model.height}`} preserveAspectRatio="none">
+              {target ? (
+                <polyline
+                  className="line-target"
+                  points={pointList(target.points, target.closed)}
+                  strokeWidth={Math.max(model.penWidth * 0.45, 1.25)}
+                />
+              ) : null}
               {selectedStroke ? (
                 <polyline
                   className="selected-stroke"
@@ -1128,8 +1291,25 @@ function TracePreview({
       ) : (
         <p className="hint">Tracing…</p>
       )}
+      {canPick ? (
+        <div className="line-roster">
+          {strokes.map((stroke, index) => (
+            <span
+              key={stroke.id}
+              id={`traced-line-${stroke.id}`}
+              role="option"
+              aria-selected={stroke.id === selectedId}
+              aria-label={`Line ${index + 1}`}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
+}
+
+function isArrowKey(key: string): boolean {
+  return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown'
 }
 
 function pointList(points: Point[], closed: boolean): string {
