@@ -142,6 +142,7 @@ export default function App() {
   const undoTrail = useRef<UndoItem[]>([])
   const redoTrail = useRef<UndoItem[]>([])
   const cropSession = useRef<number | null>(null)
+  const pointerCrop = useRef<{ before: NormalizedCrop; undoable: boolean } | null>(null)
   const [undoSteps, setUndoSteps] = useState(0)
   const [redoSteps, setRedoSteps] = useState(0)
 
@@ -159,6 +160,7 @@ export default function App() {
     undoTrail.current = []
     redoTrail.current = []
     cropSession.current = null
+    pointerCrop.current = null
     syncTrailCounts()
   }
 
@@ -172,6 +174,18 @@ export default function App() {
     if (sameCrop(before, after)) return
     if (cropSession.current === null) cropSession.current = undoTrail.current.length
     undoTrail.current.push({ kind: 'crop', before, after })
+    redoTrail.current = []
+    syncTrailCounts()
+  }
+
+  // Record the finished drag without opening a keyboard crop session.
+  function commitPointerCrop() {
+    const drag = pointerCrop.current
+    pointerCrop.current = null
+    if (!drag?.undoable) return
+    const after = cropRef.current
+    if (sameCrop(drag.before, after)) return
+    undoTrail.current.push({ kind: 'crop', before: drag.before, after })
     redoTrail.current = []
     syncTrailCounts()
   }
@@ -1026,9 +1040,16 @@ export default function App() {
                   onCropGesture={(phase, source, control) => {
                     switch (phase) {
                       case 'start':
+                        if (source === 'pointer') {
+                          pointerCrop.current = {
+                            before: cropRef.current,
+                            undoable: !editsWouldBeLost(),
+                          }
+                        }
                         beginRebuildGesture(source, control)
                         return
                       case 'end':
+                        if (source === 'pointer') commitPointerCrop()
                         endRebuildGesture()
                         return
                       case 'accept':

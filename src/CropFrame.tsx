@@ -130,15 +130,16 @@ export default function CropFrame({
     }
   }
 
-  function onPointerUp() {
+  function finishPointer() {
     const current = drag.current
+    if (!current) return
     drag.current = null
-    if (current?.kind === 'perspective') onPerspectiveGesture('end')
+    if (current.kind === 'perspective') onPerspectiveGesture('end')
     const latest = cropRef.current
-    if (current?.kind === 'draw' && (latest.width < 0.02 || latest.height < 0.02)) {
+    if (current.kind === 'draw' && (latest.width < 0.02 || latest.height < 0.02)) {
       update({ x: 0, y: 0, width: 1, height: 1 })
     }
-    if (current && current.kind !== 'perspective') onCropGesture('end', 'pointer')
+    if (current.kind !== 'perspective') onCropGesture('end', 'pointer')
   }
 
   function onCornerKey(corner: PerspectiveCorner, event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -219,7 +220,8 @@ export default function CropFrame({
         aria-label="Crop rectangle"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
+        onPointerUp={finishPointer}
+        onPointerCancel={finishPointer}
       >
         <rect className="crop-hit" x="0" y="0" width="1" height="1" />
         <path className="crop-shade" fillRule="evenodd" d={shade} />
