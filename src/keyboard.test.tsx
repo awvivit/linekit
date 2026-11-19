@@ -93,14 +93,14 @@ describe('keyboard trace controls', () => {
       const crop = screen.getByLabelText('Crop rectangle')
       giveBox(crop)
       const fullShade = crop.querySelector('.crop-shade')?.getAttribute('d')
-      const edge = screen.getByRole('button', { name: 'Left edge' })
+      const edge = screen.getByRole('button', { name: 'Left crop edge' })
       expect(edge).toHaveAttribute('tabindex', '0')
-      expect(screen.getByRole('button', { name: 'Top edge' })).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Top-left crop' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Top crop edge' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Top-left crop corner' })).toBeInTheDocument()
 
       fireEvent.keyDown(edge, { key: 'ArrowRight' })
       expect(crop.querySelector('.crop-shade')?.getAttribute('d')).not.toBe(fullShade)
-      expect(screen.getByText('Left edge, 1% across.')).toBeInTheDocument()
+      expect(screen.getByText('Left crop edge, 1% across.')).toBeInTheDocument()
       fireEvent.keyDown(edge, { key: 'Escape' })
       expect(crop.querySelector('.crop-shade')?.getAttribute('d')).toBe(fullShade)
       expect(screen.getByText('Crop cancelled.')).toBeInTheDocument()
@@ -122,6 +122,69 @@ describe('keyboard trace controls', () => {
     }
   })
 
+  it('records each crop key press as one undo step', async () => {
+    const previousWorker = globalThis.Worker
+    const previousCapture = SVGSVGElement.prototype.setPointerCapture
+    SVGSVGElement.prototype.setPointerCapture = () => {}
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: silentWorker() })
+    try {
+      render(<App />)
+      await openBlankPhoto()
+      openMore()
+      const crop = screen.getByLabelText('Crop rectangle')
+      giveBox(crop)
+      const shade = () => crop.querySelector('.crop-shade')?.getAttribute('d')
+      const fullShade = shade()
+      const edge = screen.getByRole('button', { name: 'Left crop edge' })
+      const undo = screen.getByRole('button', { name: 'Undo' })
+      const redo = screen.getByRole('button', { name: 'Redo' })
+      expect(undo).toBeDisabled()
+      expect(redo).toBeDisabled()
+
+      fireEvent.keyDown(edge, { key: 'ArrowRight' })
+      fireEvent.keyDown(edge, { key: 'ArrowRight' })
+      fireEvent.keyDown(edge, { key: 'ArrowRight' })
+      const nudged = shade()
+      expect(nudged).not.toBe(fullShade)
+      expect(undo).toBeEnabled()
+
+      fireEvent.click(undo)
+      fireEvent.click(undo)
+      fireEvent.click(undo)
+      expect(shade()).toBe(fullShade)
+      expect(undo).toBeDisabled()
+      expect(redo).toBeEnabled()
+
+      fireEvent.click(redo)
+      fireEvent.click(redo)
+      fireEvent.click(redo)
+      expect(shade()).toBe(nudged)
+      expect(redo).toBeDisabled()
+
+      fireEvent.keyDown(edge, { key: 'z', ctrlKey: true })
+      expect(shade()).not.toBe(nudged)
+      expect(shade()).not.toBe(fullShade)
+      fireEvent.keyDown(edge, { key: 'z', ctrlKey: true, shiftKey: true })
+      expect(shade()).toBe(nudged)
+
+      fireEvent.click(undo)
+      fireEvent.click(undo)
+      fireEvent.click(undo)
+      expect(shade()).toBe(fullShade)
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Top-left crop corner' }), {
+        key: 'ArrowDown',
+        shiftKey: true,
+      })
+      expect(shade()).not.toBe(fullShade)
+      fireEvent.click(undo)
+      expect(shade()).toBe(fullShade)
+      expect(undo).toBeDisabled()
+    } finally {
+      SVGSVGElement.prototype.setPointerCapture = previousCapture
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker })
+    }
+  })
+
   it('uses the rebuild confirm for a keyboard crop when edits would be lost', async () => {
     const previousWorker = globalThis.Worker
     const previousCapture = SVGSVGElement.prototype.setPointerCapture
@@ -134,7 +197,7 @@ describe('keyboard trace controls', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: 'Straighten shapes' }))
       const crop = screen.getByLabelText('Crop rectangle')
       const fullShade = crop.querySelector('.crop-shade')?.getAttribute('d')
-      fireEvent.keyDown(screen.getByRole('button', { name: 'Top edge' }), { key: 'ArrowDown' })
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Top crop edge' }), { key: 'ArrowDown' })
       const dialog = screen.getByRole('alertdialog', { name: REBUILD_CONFIRM_MESSAGE })
       await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus())
       fireEvent.keyDown(dialog, { key: 'Escape' })
@@ -142,7 +205,7 @@ describe('keyboard trace controls', () => {
       expect(crop.querySelector('.crop-shade')?.getAttribute('d')).toBe(fullShade)
       expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()
 
-      fireEvent.keyDown(screen.getByRole('button', { name: 'Top edge' }), { key: 'ArrowDown', shiftKey: true })
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Top crop edge' }), { key: 'ArrowDown', shiftKey: true })
       fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
       expect(crop.querySelector('.crop-shade')?.getAttribute('d')).not.toBe(fullShade)
       expect(screen.getByRole('checkbox', { name: 'Straighten shapes' })).toBeChecked()

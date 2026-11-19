@@ -56,14 +56,14 @@ describe('crop keyboard nudge', () => {
 
   it('names every corner and edge in tab order', () => {
     expect(CROP_HANDLES.map((handle) => CROP_HANDLE_LABELS[handle])).toEqual([
-      'Top-left crop',
-      'Top edge',
-      'Top-right crop',
-      'Right edge',
-      'Bottom-right crop',
-      'Bottom edge',
-      'Bottom-left crop',
-      'Left edge',
+      'Top-left crop corner',
+      'Top crop edge',
+      'Top-right crop corner',
+      'Right crop edge',
+      'Bottom-right crop corner',
+      'Bottom crop edge',
+      'Bottom-left crop corner',
+      'Left crop edge',
     ])
     expect(CORNER_LABELS.topLeft).toBe('Top-left corner')
     expect(CORNER_LABELS.bottomRight).toBe('Bottom-right corner')
@@ -83,8 +83,8 @@ describe('line keyboard movement', () => {
 
   it('uses the short status phrases', () => {
     expect(pointNote('Top-left corner', { x: 0.05, y: 0 })).toBe('Top-left corner, 5% across, 0% down.')
-    expect(cropNote('w', { x: 0.01, y: 0, width: 0.99, height: 1 })).toBe('Left edge, 1% across.')
-    expect(cropNote('n', { x: 0, y: 0.05, width: 1, height: 0.95 })).toBe('Top edge, 5% down.')
+    expect(cropNote('w', { x: 0.01, y: 0, width: 0.99, height: 1 })).toBe('Left crop edge, 1% across.')
+    expect(cropNote('n', { x: 0, y: 0.05, width: 1, height: 0.95 })).toBe('Top crop edge, 5% down.')
     expect(lineNote(1)).toBe('Line 2.')
     expect(lineSelectedNote(1)).toBe('Line 2 selected.')
     expect(SELECTION_CLEARED).toBe('Selection cleared.')

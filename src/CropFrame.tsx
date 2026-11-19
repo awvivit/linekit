@@ -45,7 +45,11 @@ export default function CropFrame({
   perspective: PerspectiveQuad | null
   onPerspective: (quad: PerspectiveQuad) => void
   onPerspectiveGesture: (phase: 'start' | 'end') => void
-  onCropGesture: (phase: 'start' | 'end', source: 'pointer' | 'key', control?: HTMLElement) => void
+  onCropGesture: (
+    phase: 'start' | 'end' | 'accept' | 'cancel',
+    source: 'pointer' | 'key',
+    control?: HTMLElement,
+  ) => void
   onAnnounce: (message: string) => void
 }) {
   const drag = useRef<Drag | null>(null)
@@ -162,7 +166,10 @@ export default function CropFrame({
     if (event.altKey || event.ctrlKey || event.metaKey) return
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      if (cropKey.current?.dirty) cropKey.current = { baseline: crop, dirty: false }
+      if (cropKey.current?.dirty) {
+        cropKey.current = { baseline: crop, dirty: false }
+        onCropGesture('accept', 'key', event.currentTarget)
+      }
       return
     }
     if (event.key === 'Escape') {
@@ -171,9 +178,8 @@ export default function CropFrame({
       cropKey.current = null
       if (session?.dirty && !sameCrop(crop, session.baseline)) {
         handlingKey.current = true
-        onCropGesture('start', 'key', event.currentTarget)
+        onCropGesture('cancel', 'key', event.currentTarget)
         update(session.baseline, CROP_CANCELLED)
-        onCropGesture('end', 'key')
         handlingKey.current = false
       }
       event.currentTarget.blur()
@@ -193,7 +199,9 @@ export default function CropFrame({
   }
 
   function onCropBlur() {
-    if (!handlingKey.current) cropKey.current = null
+    if (handlingKey.current) return
+    cropKey.current = null
+    onCropGesture('accept', 'key')
   }
 
   const right = crop.x + crop.width

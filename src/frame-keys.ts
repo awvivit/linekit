@@ -18,14 +18,14 @@ export const CROP_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as cons
 export type CropHandle = (typeof CROP_HANDLES)[number]
 
 export const CROP_HANDLE_LABELS: Record<CropHandle, string> = {
-  nw: 'Top-left crop',
-  n: 'Top edge',
-  ne: 'Top-right crop',
-  e: 'Right edge',
-  se: 'Bottom-right crop',
-  s: 'Bottom edge',
-  sw: 'Bottom-left crop',
-  w: 'Left edge',
+  nw: 'Top-left crop corner',
+  n: 'Top crop edge',
+  ne: 'Top-right crop corner',
+  e: 'Right crop edge',
+  se: 'Bottom-right crop corner',
+  s: 'Bottom crop edge',
+  sw: 'Bottom-left crop corner',
+  w: 'Left crop edge',
 }
 
 export const SELECTION_CLEARED = 'Selection cleared.'
