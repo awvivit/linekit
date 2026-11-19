@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { site } from './brand.ts'
 import CropFrame from './CropFrame.tsx'
+import { SELECTION_CLEARED, lineNote, lineSelectedNote, moveLine } from './frame-keys.ts'
 import { samePlan, type AutoPlan } from './image/classify.ts'
 import {
   applyEdits,
@@ -117,6 +118,7 @@ export default function App() {
   const [colorCount, setColorCount] = useState(DEFAULT_CONTROLS.colorCount ?? 6)
   const [plan, setPlan] = useState<AutoPlan | null>(null)
   const [moreOpen, setMoreOpen] = useState(readMoreOpen)
+  const [keyboardNote, setKeyboardNote] = useState('')
   const [outlineFallback, setOutlineFallback] = useState(false)
   const [crop, setCrop] = useState<NormalizedCrop>(FULL_CROP)
   const followAutoRef = useRef(true)
@@ -692,11 +694,16 @@ export default function App() {
       onPointerMove={editPointerMove}
       onPointerUp={editPointerUp}
       onPointerCancel={discardErase}
+      onPick={selectStroke}
+      onAnnounce={setKeyboardNote}
     />
   )
 
   return (
     <main className={originalUrl ? 'shell editing' : 'shell'}>
+      <p className="keyboard-live" aria-live="polite" aria-atomic="true">
+        {keyboardNote}
+      </p>
       <header className="masthead">
         <p className="eyebrow">In the browser</p>
         <h1>{site.name}</h1>
@@ -932,19 +939,21 @@ export default function App() {
                 <CropFrame
                   src={originalUrl}
                   crop={crop}
-                  onCrop={(next) => {
+                  onCrop={(next, note) => {
                     requestRebuild(() => {
                       cropRef.current = next
                       setCrop(next)
+                      if (note) setKeyboardNote(note)
                       if (!isFullCrop(next)) {
                         setNotice((current) => (current === CROP_RESET_MESSAGE ? null : current))
                       }
                     })
                   }}
-                  onCropGesture={(phase) => {
-                    if (phase === 'start') beginRebuildGesture('pointer')
+                  onCropGesture={(phase, source, control) => {
+                    if (phase === 'start') beginRebuildGesture(source, control)
                     else endRebuildGesture()
                   }}
+                  onAnnounce={setKeyboardNote}
                   perspective={perspectiveValue}
                   onPerspective={(quad) => {
                     updateHistory(replacePresent(historyRef.current, { ...historyRef.current.present, quad, perspectiveOn: true }))
@@ -1068,6 +1077,8 @@ function TracePreview({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onPick,
+  onAnnounce,
 }: {
   alt: string
   src: string | null
@@ -1080,12 +1091,66 @@ function TracePreview({
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>, image: HTMLImageElement) => void
   onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
   onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onPick: (id: number | null) => void
+  onAnnounce: (message: string) => void
 }) {
   const imageRef = useRef<HTMLImageElement>(null)
+  const [cursor, setCursor] = useState(0)
+  const [armed, setArmed] = useState(false)
+  const [trackedSelection, setTrackedSelection] = useState(selectedId)
+  const canPick = Boolean(model && model.kind === 'stroke' && strokes.length > 0 && !eraserOn)
   const selectedStroke = strokes.find((stroke) => stroke.id === selectedId) ?? null
+  if (selectedId !== trackedSelection) {
+    setTrackedSelection(selectedId)
+    const selectedIndex = strokes.findIndex((stroke) => stroke.id === selectedId)
+    if (selectedIndex >= 0) setCursor(selectedIndex)
+  }
+  const maxIndex = Math.max(strokes.length - 1, 0)
+  if (strokes.length > 0 && cursor > maxIndex) setCursor(maxIndex)
+  const active = strokes[Math.min(cursor, maxIndex)]
+  const target = armed && active && active.id !== selectedId ? active : null
+
+  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!canPick || event.altKey || event.ctrlKey || event.metaKey) return
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onPick(null)
+      onAnnounce(SELECTION_CLEARED)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const stroke = strokes[cursor]
+      if (!stroke) return
+      onPick(stroke.id)
+      onAnnounce(lineSelectedNote(cursor))
+      return
+    }
+    const next = moveLine(cursor, strokes.length, event.key)
+    if (next === null) {
+      if (isArrowKey(event.key) || event.key === 'Home' || event.key === 'End') event.preventDefault()
+      return
+    }
+    event.preventDefault()
+    setArmed(true)
+    setCursor(next)
+    onAnnounce(lineNote(next))
+  }
+
   return (
     <div
       className={eraserOn ? 'frame preview-frame erasing' : 'frame preview-frame'}
+      role={canPick ? 'listbox' : undefined}
+      aria-label={canPick ? 'Traced lines' : undefined}
+      aria-activedescendant={canPick && active ? `traced-line-${active.id}` : undefined}
+      tabIndex={canPick ? 0 : undefined}
+      onKeyDown={onKeyDown}
+      onFocus={() => {
+        setArmed(true)
+      }}
+      onBlur={() => {
+        setArmed(false)
+      }}
       onPointerDown={(event) => {
         if (imageRef.current) onPointerDown(event, imageRef.current)
       }}
@@ -1112,6 +1177,13 @@ function TracePreview({
           />
           {model ? (
             <svg className="edit-layer" viewBox={`0 0 ${model.width} ${model.height}`} preserveAspectRatio="none">
+              {target ? (
+                <polyline
+                  className="line-target"
+                  points={pointList(target.points, target.closed)}
+                  strokeWidth={Math.max(model.penWidth * 0.45, 1.25)}
+                />
+              ) : null}
               {selectedStroke ? (
                 <polyline
                   className="selected-stroke"
@@ -1128,8 +1200,25 @@ function TracePreview({
       ) : (
         <p className="hint">Tracing…</p>
       )}
+      {canPick ? (
+        <div className="line-roster">
+          {strokes.map((stroke, index) => (
+            <span
+              key={stroke.id}
+              id={`traced-line-${stroke.id}`}
+              role="option"
+              aria-selected={stroke.id === selectedId}
+              aria-label={`Line ${index + 1}`}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
+}
+
+function isArrowKey(key: string): boolean {
+  return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown'
 }
 
 function pointList(points: Point[], closed: boolean): string {

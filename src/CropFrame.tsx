@@ -1,16 +1,29 @@
 import { useRef } from 'react'
+import {
+  CROP_HANDLE_LABELS,
+  CROP_HANDLES,
+  CORNER_LABELS,
+  CROP_CANCELLED,
+  PERSPECTIVE_CORNERS,
+  cornerPoint,
+  cropCorner,
+  cropNote,
+  nudgeCrop,
+  nudgePoint,
+  pointNote,
+  sameCrop,
+  type CropHandle,
+  type PerspectiveCorner,
+} from './frame-keys.ts'
 import type { NormalizedCrop, PerspectiveQuad } from './image/limits.ts'
 
 type Point = { x: number; y: number }
 type Handle = 'nw' | 'ne' | 'sw' | 'se'
-type PerspectiveCorner = 'topLeft' | 'topRight' | 'bottomRight' | 'bottomLeft'
 type Drag =
   | { kind: 'draw'; origin: Point }
   | { kind: 'move'; origin: Point; start: NormalizedCrop }
   | { kind: 'resize'; handle: Handle; start: NormalizedCrop }
   | { kind: 'perspective'; corner: PerspectiveCorner }
-
-const PERSPECTIVE_CORNERS: readonly PerspectiveCorner[] = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft']
 
 const HANDLE_SIZE = 0.045
 /** Keep the round handles inside the frame so the edge does not clip them. */
@@ -24,21 +37,25 @@ export default function CropFrame({
   onPerspective,
   onPerspectiveGesture,
   onCropGesture,
+  onAnnounce,
 }: {
   src: string
   crop: NormalizedCrop
-  onCrop: (crop: NormalizedCrop) => void
+  onCrop: (crop: NormalizedCrop, note?: string) => void
   perspective: PerspectiveQuad | null
   onPerspective: (quad: PerspectiveQuad) => void
   onPerspectiveGesture: (phase: 'start' | 'end') => void
-  onCropGesture: (phase: 'start' | 'end') => void
+  onCropGesture: (phase: 'start' | 'end', source: 'pointer' | 'key', control?: HTMLElement) => void
+  onAnnounce: (message: string) => void
 }) {
   const drag = useRef<Drag | null>(null)
   const cropRef = useRef(crop)
+  const cropKey = useRef<{ baseline: NormalizedCrop; dirty: boolean } | null>(null)
+  const handlingKey = useRef(false)
 
-  function update(next: NormalizedCrop) {
+  function update(next: NormalizedCrop, note?: string) {
     cropRef.current = next
-    onCrop(next)
+    onCrop(next, note)
   }
 
   function locate(event: React.PointerEvent<SVGSVGElement>): Point {
@@ -49,6 +66,7 @@ export default function CropFrame({
   }
 
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    cropRef.current = crop
     event.currentTarget.setPointerCapture(event.pointerId)
     const point = locate(event)
     if (perspective) {
@@ -61,16 +79,16 @@ export default function CropFrame({
     }
     const handle = fullCrop(crop) ? null : hitHandle(point, crop)
     if (handle) {
-      onCropGesture('start')
+      onCropGesture('start', 'pointer')
       drag.current = { kind: 'resize', handle, start: crop }
       return
     }
     if (!fullCrop(crop) && inside(point, crop)) {
-      onCropGesture('start')
+      onCropGesture('start', 'pointer')
       drag.current = { kind: 'move', origin: point, start: crop }
       return
     }
-    onCropGesture('start')
+    onCropGesture('start', 'pointer')
     drag.current = { kind: 'draw', origin: point }
     update({ x: point.x, y: point.y, width: 0, height: 0 })
   }
@@ -116,12 +134,72 @@ export default function CropFrame({
     if (current?.kind === 'draw' && (latest.width < 0.02 || latest.height < 0.02)) {
       update({ x: 0, y: 0, width: 1, height: 1 })
     }
-    if (current && current.kind !== 'perspective') onCropGesture('end')
+    if (current && current.kind !== 'perspective') onCropGesture('end', 'pointer')
+  }
+
+  function onCornerKey(corner: PerspectiveCorner, event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.altKey || event.ctrlKey || event.metaKey || !perspective) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.currentTarget.blur()
+      return
+    }
+    if (!isArrow(event.key)) return
+    event.preventDefault()
+    const nextPoint = nudgePoint(cornerPoint(perspective, corner), event.key, event.shiftKey)
+    if (!nextPoint) return
+    onPerspectiveGesture('start')
+    onPerspective({ ...perspective, [corner]: nextPoint })
+    onPerspectiveGesture('end')
+    onAnnounce(pointNote(CORNER_LABELS[corner], nextPoint))
+  }
+
+  function onCropKey(handle: CropHandle, event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      if (cropKey.current?.dirty) cropKey.current = { baseline: crop, dirty: false }
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      const session = cropKey.current
+      cropKey.current = null
+      if (session?.dirty && !sameCrop(crop, session.baseline)) {
+        handlingKey.current = true
+        onCropGesture('start', 'key', event.currentTarget)
+        update(session.baseline, CROP_CANCELLED)
+        onCropGesture('end', 'key')
+        handlingKey.current = false
+      }
+      event.currentTarget.blur()
+      return
+    }
+    if (!isArrow(event.key)) return
+    event.preventDefault()
+    const next = nudgeCrop(crop, handle, event.key, event.shiftKey)
+    if (!next) return
+    const baseline = cropKey.current?.baseline ?? crop
+    handlingKey.current = true
+    cropKey.current = { baseline, dirty: true }
+    onCropGesture('start', 'key', event.currentTarget)
+    update(next, cropNote(handle, next))
+    onCropGesture('end', 'key')
+    handlingKey.current = false
+  }
+
+  function onCropBlur() {
+    if (!handlingKey.current) cropKey.current = null
   }
 
   const right = crop.x + crop.width
   const bottom = crop.y + crop.height
   const shade = `M0 0 H1 V1 H0 Z M${crop.x} ${crop.y} H${right} V${bottom} H${crop.x} Z`
+  const quiet = fullCrop(crop)
 
   return (
     <div className="frame">
@@ -154,10 +232,10 @@ export default function CropFrame({
               return <circle key={corner} className="perspective-handle" cx={point.x} cy={point.y} r={0.028} />
             })
           : null}
-        {fullCrop(crop)
+        {quiet
           ? null
           : (['nw', 'ne', 'sw', 'se'] as const).map((handle) => {
-              const point = corner(crop, handle)
+              const point = cropCorner(crop, handle)
               return (
                 <rect
                   key={handle}
@@ -170,8 +248,58 @@ export default function CropFrame({
               )
             })}
       </svg>
+      {perspective
+        ? PERSPECTIVE_CORNERS.map((corner) => {
+            const point = cornerPoint(perspective, corner)
+            const visible = visiblePerspectiveHandle(point)
+            return (
+              <button
+                key={corner}
+                type="button"
+                className="frame-key round"
+                style={place(visible)}
+                tabIndex={0}
+                aria-label={CORNER_LABELS[corner]}
+                aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
+                data-x={point.x}
+                data-y={point.y}
+                onKeyDown={(event) => {
+                  onCornerKey(corner, event)
+                }}
+              />
+            )
+          })
+        : null}
+      {CROP_HANDLES.map((handle) => {
+        const point = cropCorner(crop, handle)
+        const round = handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw'
+        return (
+          <button
+            key={handle}
+            type="button"
+            className={round ? 'frame-key round' : 'frame-key'}
+            style={place(point)}
+            tabIndex={0}
+            aria-label={CROP_HANDLE_LABELS[handle]}
+            aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Enter Escape"
+            data-quiet={quiet ? 'true' : 'false'}
+            onKeyDown={(event) => {
+              onCropKey(handle, event)
+            }}
+            onBlur={onCropBlur}
+          />
+        )
+      })}
     </div>
   )
+}
+
+function place(point: Point): React.CSSProperties {
+  return { left: `${point.x * 100}%`, top: `${point.y * 100}%` }
+}
+
+function isArrow(key: string): boolean {
+  return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown'
 }
 
 function fromPoints(origin: Point, point: Point): NormalizedCrop {
@@ -212,19 +340,12 @@ function hitPerspective(point: Point, quad: PerspectiveQuad): PerspectiveCorner 
 
 function hitHandle(point: Point, crop: NormalizedCrop): Handle | null {
   for (const handle of ['nw', 'ne', 'sw', 'se'] as const) {
-    const cornerPoint = corner(crop, handle)
-    if (Math.abs(point.x - cornerPoint.x) <= HANDLE_SIZE && Math.abs(point.y - cornerPoint.y) <= HANDLE_SIZE) {
+    const corner = cropCorner(crop, handle)
+    if (Math.abs(point.x - corner.x) <= HANDLE_SIZE && Math.abs(point.y - corner.y) <= HANDLE_SIZE) {
       return handle
     }
   }
   return null
-}
-
-function corner(crop: NormalizedCrop, handle: Handle): Point {
-  if (handle === 'nw') return { x: crop.x, y: crop.y }
-  if (handle === 'ne') return { x: crop.x + crop.width, y: crop.y }
-  if (handle === 'sw') return { x: crop.x, y: crop.y + crop.height }
-  return { x: crop.x + crop.width, y: crop.y + crop.height }
 }
 
 function inside(point: Point, crop: NormalizedCrop): boolean {
