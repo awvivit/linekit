@@ -2,7 +2,8 @@ import { defineConfig, devices } from '@playwright/test'
 
 const desktop = devices['Desktop Chrome']
 const mobile = devices['Pixel 5']
-if (!desktop || !mobile) {
+const safari = devices['Desktop Safari']
+if (!desktop || !mobile || !safari) {
   throw new Error('Playwright device descriptors are missing')
 }
 
@@ -27,5 +28,10 @@ export default defineConfig({
   projects: [
     { name: 'desktop', use: { ...desktop } },
     { name: 'mobile', use: { ...mobile } },
+    {
+      name: 'webkit',
+      testMatch: /crop-reset\.spec\.ts/,
+      use: { ...safari },
+    },
   ],
 })
