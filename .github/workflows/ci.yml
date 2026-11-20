@@ -49,8 +49,8 @@ jobs:
       - name: License check
         run: npm run check-licenses
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
 
       - name: Smoke test
         run: npm run test:e2e
